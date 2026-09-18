@@ -68,7 +68,7 @@ class Dataset(data.Dataset):
                 # just for classification not report error
                 img_mask = Image.fromarray(np.zeros((img.size[0], img.size[1])), mode='L')
             else:
-                img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
+                img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 127
                 img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
         # transforms
         img = self.transform(img) if self.transform is not None else img
