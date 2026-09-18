@@ -10,10 +10,12 @@ from logger import get_logger
 from tqdm import tqdm
 
 import os
+import shutil
 import random
 import numpy as np
 from tabulate import tabulate
 from utils import get_transform
+from sklearn.metrics import roc_auc_score
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -76,6 +78,8 @@ def test(args):
     text_features = text_features/text_features.norm(dim=-1, keepdim=True)
 
 
+    bad_case_records = []
+
     model.to(device)
     for idx, items in enumerate(tqdm(test_dataloader)):
         image = items['img'].to(device)
@@ -111,6 +115,27 @@ def test(args):
             anomaly_map = torch.stack([torch.from_numpy(gaussian_filter(i, sigma = args.sigma)) for i in anomaly_map.detach().cpu()], dim = 0 )
             results[cls_name[0]]['anomaly_maps'].append(anomaly_map)
             visualizer(items['img_path'], anomaly_map.detach().cpu().numpy(), args.image_size, args.save_path, cls_name, gt_mask.detach().cpu().numpy())
+
+            gt_flat = gt_mask[0, 0].detach().cpu().numpy().ravel()
+            pred_flat = anomaly_map[0].detach().cpu().numpy().ravel()
+            if gt_flat.min() != gt_flat.max():
+                score = roc_auc_score(gt_flat, pred_flat)
+                img_path = items['img_path'][0]
+                cls = img_path.split('/')[-2]
+                filename = img_path.split('/')[-1]
+                vis_path = os.path.join(args.save_path, 'imgs', cls_name[0], cls, filename)
+                bad_case_records.append((score, img_path, vis_path))
+
+    bad_case_records.sort(key=lambda x: x[0])
+    bad_cases_dir = os.path.join(args.save_path, 'bad_cases')
+    os.makedirs(bad_cases_dir, exist_ok=True)
+    for rank, (score, img_path, vis_path) in enumerate(bad_case_records[:50], start=1):
+        if not os.path.isfile(vis_path):
+            continue
+        ext = os.path.splitext(vis_path)[1]
+        dst = os.path.join(bad_cases_dir, f"{rank:02d}_auroc{score:.3f}_{os.path.splitext(os.path.basename(vis_path))[0]}{ext}")
+        shutil.copyfile(vis_path, dst)
+    logger.info(f"Saved top {min(50, len(bad_case_records))} worst cases to {bad_cases_dir}")
 
     table_ls = []
     image_auroc_list = []
