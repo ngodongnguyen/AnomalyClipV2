@@ -13,11 +13,12 @@ def visualizer(pathes, anomaly_map, img_size, save_path, cls_name, gt_mask=None)
 
         if gt_mask is not None:
             gt_binary = (np.squeeze(gt_mask[idx]) > 0.5).astype(np.uint8)
+            gt = gt_binary * 255
+            gt_vis = cv2.cvtColor(gt, cv2.COLOR_GRAY2RGB)
             contours, _ = cv2.findContours(gt_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            gt_vis = vis.copy()
-            cv2.drawContours(gt_vis, contours, -1, (0, 255, 0), 2)
-            cv2.drawContours(pred_vis, contours, -1, (0, 255, 0), 2)
-            combined = np.concatenate([vis, gt_vis, pred_vis], axis=1)
+            pred_gt_vis = pred_vis.copy()
+            cv2.drawContours(pred_gt_vis, contours, -1, (0, 255, 0), 2)
+            combined = np.concatenate([vis, gt_vis, pred_vis, pred_gt_vis], axis=1)
         else:
             combined = pred_vis
 
