@@ -22,6 +22,7 @@ Then reports, per dataset:
 Both correlations are reported pooled-over-all-patches and as the mean of
 per-image correlations (more robust to cross-image confounds).
 """
+import os
 import AnomalyCLIP_lib
 import torch
 import torch.nn.functional as F
@@ -29,6 +30,7 @@ import argparse
 import numpy as np
 from tqdm import tqdm
 from scipy.stats import pearsonr
+from sklearn.metrics import roc_auc_score
 
 from prompt_ensemble import AnomalyCLIP_PromptLearner
 from dataset import Dataset
@@ -76,10 +78,19 @@ def analyze(args):
     text_features = torch.stack(torch.chunk(text_features, dim=0, chunks=2), dim=1)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
+    filter_names = None
+    if args.filter_list is not None:
+        with open(args.filter_list) as f:
+            filter_names = set(line.strip() for line in f if line.strip())
+
     all_gt, all_homog, all_score = [], [], []
     per_image_corr_gt, per_image_corr_score = [], []
+    per_image_gap, per_image_auroc = [], []
 
     for items in tqdm(test_dataloader):
+        img_path = items['img_path'][0]
+        if filter_names is not None and os.path.basename(img_path) not in filter_names:
+            continue
         image = items['img'].to(device)
         gt_mask = items['img_mask']
         gt_mask[gt_mask > 0.5], gt_mask[gt_mask <= 0.5] = 1, 0
@@ -121,6 +132,12 @@ def analyze(args):
             if gt_small.min() != gt_small.max():
                 r_gt, _ = pearsonr(gt_small.ravel(), homog_map.ravel())
                 per_image_corr_gt.append(r_gt)
+
+                gt_flat = gt_small.ravel().astype(bool)
+                gap = homog_map.ravel()[gt_flat].mean() - homog_map.ravel()[~gt_flat].mean()
+                auroc = roc_auc_score(gt_small.ravel(), score_map.ravel())
+                per_image_gap.append(gap)
+                per_image_auroc.append(auroc)
             r_score, _ = pearsonr(score_map.ravel(), homog_map.ravel())
             per_image_corr_score.append(r_score)
 
@@ -131,6 +148,8 @@ def analyze(args):
     pooled_domain_polarity, _ = pearsonr(all_gt, all_homog)
     pooled_model_polarity, _ = pearsonr(all_score, all_homog)
 
+    gap_auroc_corr, _ = pearsonr(per_image_gap, per_image_auroc)
+
     print("\n=== Anomaly Polarity report:", args.dataset, "===")
     print(f"n_images = {len(per_image_corr_score)}")
     print(f"domain_intrinsic_polarity  (GT vs homogeneity)      pooled = {pooled_domain_polarity:+.4f}   "
@@ -139,6 +158,11 @@ def analyze(args):
           f"mean-per-image = {np.mean(per_image_corr_score):+.4f}")
     print("(> 0: anomaly/high-score region MORE homogeneous than surroundings; "
           "< 0: LESS homogeneous, i.e. texture-break style)")
+    print(f"\nmean per-image homogeneity gap (inside GT - outside GT) = {np.mean(per_image_gap):+.4f}")
+    print(f"corr(per-image gap, per-image pixel-AUROC) = {gap_auroc_corr:+.4f}")
+    print("(expected NEGATIVE if the mismatch hypothesis holds: the more "
+          "homogeneous/blob-like the true lesion is vs its background, the "
+          "worse AnomalyCLIP's own texture-break-seeking score does on that image)")
 
 
 if __name__ == '__main__':
@@ -152,6 +176,8 @@ if __name__ == '__main__':
     parser.add_argument("--n_ctx", type=int, default=12)
     parser.add_argument("--t_n_ctx", type=int, default=4)
     parser.add_argument("--feature_map_layer", type=int, nargs="+", default=[0])
+    parser.add_argument("--filter_list", type=str, default=None,
+                         help="optional text file of image basenames (one per line) to restrict analysis to")
     args = parser.parse_args()
     print(args)
     analyze(args)
