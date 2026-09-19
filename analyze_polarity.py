@@ -148,7 +148,10 @@ def analyze(args):
     pooled_domain_polarity, _ = pearsonr(all_gt, all_homog)
     pooled_model_polarity, _ = pearsonr(all_score, all_homog)
 
+    per_image_gap = np.array(per_image_gap)
+    per_image_auroc = np.array(per_image_auroc)
     gap_auroc_corr, _ = pearsonr(per_image_gap, per_image_auroc)
+    abs_gap_auroc_corr, _ = pearsonr(np.abs(per_image_gap), per_image_auroc)
 
     print("\n=== Anomaly Polarity report:", args.dataset, "===")
     print(f"n_images = {len(per_image_corr_score)}")
@@ -159,10 +162,11 @@ def analyze(args):
     print("(> 0: anomaly/high-score region MORE homogeneous than surroundings; "
           "< 0: LESS homogeneous, i.e. texture-break style)")
     print(f"\nmean per-image homogeneity gap (inside GT - outside GT) = {np.mean(per_image_gap):+.4f}")
-    print(f"corr(per-image gap, per-image pixel-AUROC) = {gap_auroc_corr:+.4f}")
-    print("(expected NEGATIVE if the mismatch hypothesis holds: the more "
-          "homogeneous/blob-like the true lesion is vs its background, the "
-          "worse AnomalyCLIP's own texture-break-seeking score does on that image)")
+    print(f"corr(per-image gap, per-image pixel-AUROC)       = {gap_auroc_corr:+.4f}")
+    print(f"corr(per-image |gap|, per-image pixel-AUROC)     = {abs_gap_auroc_corr:+.4f}")
+    print("(gap>0 test: expected NEGATIVE under the 'polarity mismatch' hypothesis. "
+          "|gap| test: expected POSITIVE under the 'low-salience lesions are hard "
+          "regardless of direction' hypothesis.)")
 
 
 if __name__ == '__main__':
