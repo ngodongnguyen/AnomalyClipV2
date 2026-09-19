@@ -128,6 +128,8 @@ def test(args):
 
     bad_case_records.sort(key=lambda x: x[0])
     bad_cases_dir = os.path.join(args.save_path, 'bad_cases')
+    if os.path.isdir(bad_cases_dir):
+        shutil.rmtree(bad_cases_dir)
     os.makedirs(bad_cases_dir, exist_ok=True)
     for rank, (score, img_path, vis_path) in enumerate(bad_case_records[:50], start=1):
         if not os.path.isfile(vis_path):
