@@ -32,7 +32,7 @@ def train(args):
     model, _ = AnomalyCLIP_lib.load("ViT-L/14@336px", device=device, design_details = AnomalyCLIP_parameters)
     model.eval()
 
-    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset)
+    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p)
     train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
 
   ##########################################################################################
@@ -134,6 +134,7 @@ if __name__ == '__main__':
     parser.add_argument("--print_freq", type=int, default=1, help="print frequency")
     parser.add_argument("--save_freq", type=int, default=1, help="save frequency")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
+    parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
     args = parser.parse_args()
     setup_seed(args.seed)
     train(args)

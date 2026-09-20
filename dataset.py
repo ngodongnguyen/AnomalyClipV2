@@ -38,8 +38,10 @@ def generate_class_info(dataset_name):
     return obj_list, class_name_map_class_id
 
 class Dataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, mode='test'):
+    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45)):
         self.root = root
+        self.zoom_aug_p = zoom_aug_p
+        self.zoom_target = zoom_target
         self.transform = transform
         self.target_transform = target_transform
         self.data_all = []
@@ -56,6 +58,26 @@ class Dataset(data.Dataset):
     def __len__(self):
         return self.length
 
+    def _zoom_around_anomaly(self, img, img_mask):
+        # square crop that keeps the whole anomaly and makes it fill `zoom_target` of the crop
+        m = np.array(img_mask) > 127
+        if not m.any() or img_mask.size != img.size:
+            return img, img_mask
+        W, H = img.size
+        ys, xs = np.nonzero(m)
+        y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+        side = int(np.sqrt(m.sum() / random.uniform(*self.zoom_target)))
+        side = min(max(side, y1 - y0, x1 - x0, 32), W, H)
+        if side >= min(W, H):
+            return img, img_mask
+        lo_x, hi_x = max(0, x1 - side), min(x0, W - side)
+        lo_y, hi_y = max(0, y1 - side), min(y0, H - side)
+        if lo_x > hi_x or lo_y > hi_y:
+            return img, img_mask
+        cx, cy = random.randint(lo_x, hi_x), random.randint(lo_y, hi_y)
+        box = (cx, cy, cx + side, cy + side)
+        return img.crop(box), img_mask.crop(box)
+
     def __getitem__(self, index):
         data = self.data_all[index]
         img_path, mask_path, cls_name, specie_name, anomaly = data['img_path'], data['mask_path'], data['cls_name'], \
@@ -70,6 +92,8 @@ class Dataset(data.Dataset):
             else:
                 img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
                 img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
+        if self.zoom_aug_p > 0 and anomaly == 1 and random.random() < self.zoom_aug_p:
+            img, img_mask = self._zoom_around_anomaly(img, img_mask)
         # transforms
         img = self.transform(img) if self.transform is not None else img
         img_mask = self.target_transform(   
