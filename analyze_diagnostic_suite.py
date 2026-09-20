@@ -8,6 +8,10 @@ Model-based variants (all scored with per-image pixel-AUROC vs the GT mask):
   sigma{0,2,8,16} different smoothing strengths (baseline sigma = --sigma)
   highpass / local_norm   local-contrast versions of the baseline map
   prop_a0.5/0.9   training-free feature-affinity propagation of the patch scores
+  sigma24/32/48, fuse_mean_s16   stronger smoothing / fusion+smoothing
+  sp100/sp300     region-mean of the map inside SLIC superpixels of the RGB image (edge-aware aggregation)
+  inpaint_spec    glare pixels (gray>235) inpainted in the INPUT before the model sees it
+Every AUROC is reported twice: over all pixels (test.py protocol) and restricted to the field of view (@fov).
 Model-free reference maps (free_*): centre prior, redness, smoothness, brightness, saturation.
 Plus ORACLE rows (per-image best variant) = headroom of an adaptive selector, and a failure-typing
 table (where the top-1% pixels land: lesion / glare / dark lumen / FOV edge).
@@ -17,18 +21,21 @@ Baseline = scale518 (layer 24, gaussian sigma) -- same recipe as test.py, evalua
 import os
 import csv
 import argparse
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
+from scipy.ndimage import binary_dilation
+from skimage.segmentation import slic
 
 import AnomalyCLIP_lib
 from prompt_ensemble import AnomalyCLIP_PromptLearner
 from dataset import Dataset
 from utils import get_transform
 from diag_utils import (gauss, norm01, safe_auc, raw_descriptors, model_free_maps, failure_typing,
-                        print_report)
+                        region_mean, print_report)
 
 LAYER_IDS = [6, 12, 18, 24]
 
@@ -127,24 +134,41 @@ def run(args):
 
         V["fuse_mean"] = np.mean([norm01(V[f"scale{s}"]) for s in scales], 0)
         V["fuse_max"] = np.max([norm01(V[f"scale{s}"]) for s in scales], 0)
+        V["fuse_mean_s16"] = gauss(np.mean([norm01(raw[s]) for s in scales], 0), 16 * sc)
         base = raw[518]
-        for sgv in (0, 2, 8, 16):
+        for sgv in (0, 2, 8, 16, 24, 32, 48):
             V[f"sigma{sgv}"] = gauss(base, sgv * sc)
         smooth, mu = gauss(base, sg), gauss(base, 20 * sc)
+        for n_seg in (100, 300):
+            V[f"sp{n_seg}"] = region_mean(smooth, slic(rgb, n_segments=n_seg, compactness=10, start_label=0))
+
+        full = np.array(Image.open(img_path).convert("RGB").resize((518, 518), Image.BICUBIC))
+        spec518 = binary_dilation(cv2.cvtColor(full, cv2.COLOR_RGB2GRAY) > 235, iterations=3)
+        if spec518.any():
+            inp = cv2.inpaint(full, spec518.astype(np.uint8) * 255, 5, cv2.INPAINT_TELEA)
+            with torch.no_grad():
+                m_i, _, _ = abn_map(encode(preprocess(Image.fromarray(inp)).unsqueeze(0).to(device), [24])[-1], E)
+            V["inpaint_spec"] = gauss(m_i, sg)
+        else:
+            V["inpaint_spec"] = V["scale518"]
+
         V["highpass"] = smooth - mu
         V["local_norm"] = (smooth - mu) / (np.sqrt(gauss((base - mu) ** 2, 20 * sc)) + 1e-6)
 
         if model_variants is None:
-            order = [f"scale{s}" for s in scales] + ["fuse_mean", "fuse_max"] + [f"layer{l}" for l in LAYER_IDS] + \
-                    ["layers_sum", "sigma0", "sigma2", "sigma8", "sigma16", "highpass", "local_norm",
-                     "prop_a0.5", "prop_a0.9"]
+            order = [f"scale{s}" for s in scales] + ["fuse_mean", "fuse_max", "fuse_mean_s16"] + \
+                    [f"layer{l}" for l in LAYER_IDS] + \
+                    ["layers_sum", "sigma0", "sigma2", "sigma8", "sigma16", "sigma24", "sigma32", "sigma48",
+                     "highpass", "local_norm", "sp100", "sp300", "prop_a0.5", "prop_a0.9", "inpaint_spec"]
             model_variants = [v for v in order if v in V]
             free_variants = list(free.keys())
 
         gt_flat = gt.ravel().astype(np.uint8)
         row = {"image": os.path.basename(img_path), **desc}
+        gt_v = gt[valid].astype(np.uint8)
         for name, m in {**V, **free}.items():
             row[name] = safe_auc(gt_flat, m)
+            row[name + "@fov"] = safe_auc(gt_v, m[valid])
         row.update(failure_typing(V["scale518"], gt, gray, valid))
         rows.append(row)
 
@@ -159,6 +183,7 @@ def run(args):
     print(f"\n##### Diagnostic suite: {name}  (CSV: {out_csv}) #####")
     print(f"eval_size={E}, sigma={args.sigma} (scaled to {sg:.2f}px at eval size), scales={scales}")
     print_report(rows, model_variants, free_variants, base="scale518")
+    print_report(rows, model_variants, free_variants, base="scale518", suffix="@fov", typing=False)
 
 
 if __name__ == "__main__":

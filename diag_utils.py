@@ -14,6 +14,14 @@ def norm01(m):
     return (m - m.min()) / (m.max() - m.min() + 1e-8)
 
 
+def region_mean(m, seg):
+    """Replace every pixel by the mean of m over its segment (edge-aware aggregation)."""
+    flat = seg.ravel()
+    cnt = np.bincount(flat)
+    means = np.bincount(flat, weights=m.ravel()) / np.maximum(cnt, 1)
+    return means[seg].astype(np.float32)
+
+
 def safe_auc(gt_flat, m):
     return float(roc_auc_score(gt_flat, m.ravel()))
 
@@ -100,7 +108,7 @@ TYPING_COLS = ["peak_in", "top_in", "recall10", "dice_oracle", "top_spec", "top_
                "top_outfov", "dyn_range", "mean_gray", "mean_sat"]
 
 
-def print_report(rows, model_variants, free_variants, base="scale518"):
+def print_report(rows, model_variants, free_variants, base="scale518", suffix="", typing=True):
     n = len(rows)
     la = np.array([r["log_area"] for r in rows])
     qid = np.digitize(la, np.quantile(la, [.25, .5, .75]))
@@ -108,14 +116,15 @@ def print_report(rows, model_variants, free_variants, base="scale518"):
     def arr(k):
         return np.array([r[k] for r in rows], dtype=float)
 
-    table = {v: arr(v) for v in model_variants + free_variants}
+    table = {v: arr(v + suffix) for v in model_variants + free_variants}
     scale_names = [v for v in model_variants if v.startswith("scale")]
     table["ORACLE best-scale"] = np.max([table[v] for v in scale_names], 0)
     table["ORACLE best-of-all"] = np.max([table[v] for v in model_variants], 0)
     b = table[base]
     q_n = [int((qid == k).sum()) for k in range(4)]
 
-    print(f"\n=== A. Mean per-image pixel-AUROC by lesion-area quartile (n={n}; Q1 smallest ... Q4 largest) ===")
+    tag = " [restricted to pixels inside the field of view]" if suffix else ""
+    print(f"\n=== A. Mean per-image pixel-AUROC by lesion-area quartile{tag} (n={n}; Q1 smallest ... Q4 largest) ===")
     print(f"quartile sizes: {q_n}   baseline = {base}")
     print(f"{'variant':<22}{'ALL':>7}{'Q1':>7}{'Q2':>7}{'Q3':>7}{'Q4':>7}{'dALL':>8}{'dQ4':>8}")
 
@@ -141,6 +150,8 @@ def print_report(rows, model_variants, free_variants, base="scale518"):
     print("\nTop-5 variants by dALL :", ", ".join(f"{v} ({d_all[v]:+.3f})" for v in sorted(cand, key=lambda v: -d_all[v])[:5]))
     print("Top-5 variants by dQ4  :", ", ".join(f"{v} ({d_q4[v]:+.3f})" for v in sorted(cand, key=lambda v: -d_q4[v])[:5]))
 
+    if not typing:
+        return
     print(f"\n=== B. Where does the baseline map fire? (top-1% pixels; fractions may overlap) ===")
     print(f"{'group':<10}{'n':>5}" + "".join(f"{c:>13}" for c in TYPING_COLS))
     order = np.argsort(b)
