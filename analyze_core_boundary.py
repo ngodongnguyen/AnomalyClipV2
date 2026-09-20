@@ -21,6 +21,7 @@ from PIL import Image
 from tqdm import tqdm
 from scipy import stats
 from scipy.ndimage import gaussian_filter, distance_transform_edt
+from sklearn.metrics import roc_auc_score
 
 import AnomalyCLIP_lib
 from prompt_ensemble import AnomalyCLIP_PromptLearner
@@ -96,11 +97,17 @@ def run(args):
         for k, m in regions.items():
             row[k] = float(pct[m].mean())
         row["core_minus_band"] = row["core"] - row["band_in"]
+        row["area_frac"] = float(np.exp(desc["log_area"]))
+        for name_, key in (("auc_core_far", "core"), ("auc_band_far", "band_in")):
+            pos, neg = amap[regions[key]], amap[regions["far_out"]]
+            y = np.concatenate([np.ones(pos.size), np.zeros(neg.size)])
+            row[name_] = float(roc_auc_score(y, np.concatenate([pos, neg])))
         rows.append(row)
 
     name = os.path.basename(args.data_path.rstrip("/"))
     out_csv = args.out_csv or f"core_boundary_{args.dataset}_{name}.csv"
-    cols = ["image", "log_area", "tex_ratio", "core", "band_in", "band_out", "far_out", "core_minus_band"]
+    cols = ["image", "log_area", "tex_ratio", "core", "band_in", "band_out", "far_out", "core_minus_band",
+            "area_frac", "auc_core_far", "auc_band_far"]
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -114,15 +121,21 @@ def run(args):
           f"| core<band_in in {100 * (arr['core_minus_band'] < 0).mean():.0f}% of images")
 
     edges = np.quantile(arr["log_area"], [0, .25, .5, .75, 1])
-    print(f"\n{'area quartile':<16}{'n':>5}{'core':>8}{'band_in':>9}{'band_out':>10}{'far_out':>9}{'core-band':>11}")
+    print(f"\n{'area quartile':<16}{'n':>5}{'area':>7}{'core':>8}{'band_in':>9}{'band_out':>10}{'far_out':>9}{'core-band':>11}{'AUC core/far':>14}{'AUC band/far':>14}")
     for q in range(4):
         lo, hi = edges[q], edges[q + 1]
         sel = (arr["log_area"] >= lo) & ((arr["log_area"] < hi) if q < 3 else (arr["log_area"] <= hi))
         print(f"Q{q + 1} ({'small' if q == 0 else 'large' if q == 3 else '     '})   {sel.sum():>5}"
+              f"{arr['area_frac'][sel].mean():>7.2f}"
               f"{arr['core'][sel].mean():>8.3f}{arr['band_in'][sel].mean():>9.3f}"
               f"{arr['band_out'][sel].mean():>10.3f}{arr['far_out'][sel].mean():>9.3f}"
-              f"{arr['core_minus_band'][sel].mean():>+11.3f}")
+              f"{arr['core_minus_band'][sel].mean():>+11.3f}"
+              f"{arr['auc_core_far'][sel].mean():>14.3f}{arr['auc_band_far'][sel].mean():>14.3f}")
 
+    print("\nPearson corr of auc_core_far - auc_band_far (core lags rim) with:")
+    lag = arr["auc_core_far"] - arr["auc_band_far"]
+    for k in ["log_area", "tex_ratio"]:
+        print(f"  {k:<10} {stats.pearsonr(arr[k], lag)[0]:+.3f}")
     print("\nPearson corr of core_minus_band with:")
     for k in ["log_area", "tex_ratio"]:
         print(f"  {k:<10} {stats.pearsonr(arr[k], arr['core_minus_band'])[0]:+.3f}")
