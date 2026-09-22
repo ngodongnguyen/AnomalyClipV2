@@ -58,25 +58,77 @@ class Dataset(data.Dataset):
     def __len__(self):
         return self.length
 
-    def _zoom_around_anomaly(self, img, img_mask):
-        # square crop that keeps the whole anomaly and makes it fill `zoom_target` of the crop
-        m = np.array(img_mask) > 127
-        if not m.any() or img_mask.size != img.size:
-            return img, img_mask
+    def _sample_crop_box(self, img, m, target_range):
+        # square box that contains the whole anomaly (mask m) and makes it fill `target_range`
+        # of the box's area. Returns None if no valid box exists (mask empty, or lesion already
+        # too large for the image to leave any room to zoom out).
+        if not m.any():
+            return None
         W, H = img.size
         ys, xs = np.nonzero(m)
         y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
-        side = int(np.sqrt(m.sum() / random.uniform(*self.zoom_target)))
+        side = int(np.sqrt(m.sum() / random.uniform(*target_range)))
         side = min(max(side, y1 - y0, x1 - x0, 32), W, H)
         if side >= min(W, H):
-            return img, img_mask
+            return None
         lo_x, hi_x = max(0, x1 - side), min(x0, W - side)
         lo_y, hi_y = max(0, y1 - side), min(y0, H - side)
         if lo_x > hi_x or lo_y > hi_y:
-            return img, img_mask
+            return None
         cx, cy = random.randint(lo_x, hi_x), random.randint(lo_y, hi_y)
-        box = (cx, cy, cx + side, cy + side)
+        return (cx, cy, cx + side, cy + side)
+
+    def _zoom_around_anomaly(self, img, img_mask):
+        # square crop that keeps the whole anomaly and makes it fill `zoom_target` of the crop
+        m = np.array(img_mask) > 127
+        if img_mask.size != img.size:
+            return img, img_mask
+        box = self._sample_crop_box(img, m, self.zoom_target)
+        if box is None:
+            return img, img_mask
         return img.crop(box), img_mask.crop(box)
+
+    def sample_scale_pair(self, index, scale_ranges=((0.05, 0.15), (0.25, 0.45)), max_tries=10):
+        """
+        For an anomalous sample, build two crops around the SAME lesion at two different,
+        non-overlapping target scales (default: lesion fills 5-15% of crop A's area vs 25-45%
+        of crop B's area) -- i.e. two views of one lesion seen "zoomed out" vs "zoomed in".
+
+        Returns (img_a, img_b, box_a_norm, box_b_norm) where img_a/img_b are transformed image
+        tensors (via self.transform) and box_*_norm = (x0, y0, x1, y1) is the lesion's own
+        bounding box in [0, 1] coordinates relative to that crop (guaranteed to lie inside
+        [0, 1]^2 since every crop is built to fully contain the lesion). Returns None if this
+        sample has no usable mask or no valid crop could be found for either scale.
+        """
+        data = self.data_all[index]
+        if data['anomaly'] != 1:
+            return None
+        img_path, mask_path = data['img_path'], data['mask_path']
+        img = Image.open(os.path.join(self.root, img_path))
+        if os.path.isdir(os.path.join(self.root, mask_path)):
+            return None
+        m = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
+        if not m.any():
+            return None
+        ys, xs = np.nonzero(m)
+        y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
+
+        views = []
+        for target_range in scale_ranges:
+            box = None
+            for _ in range(max_tries):
+                box = self._sample_crop_box(img, m, target_range)
+                if box is not None:
+                    break
+            if box is None:
+                return None
+            cx, cy, cx2, cy2 = box
+            side = cx2 - cx
+            crop = img.crop(box)
+            box_norm = ((x0 - cx) / side, (y0 - cy) / side, (x1 - cx) / side, (y1 - cy) / side)
+            views.append((self.transform(crop), torch.tensor(box_norm, dtype=torch.float32)))
+        (img_a, box_a), (img_b, box_b) = views
+        return img_a, img_b, box_a, box_b
 
     def __getitem__(self, index):
         data = self.data_all[index]
