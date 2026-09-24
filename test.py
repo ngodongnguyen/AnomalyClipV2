@@ -15,6 +15,7 @@ import random
 import numpy as np
 from tabulate import tabulate
 from utils import get_transform
+from extent_prompt import ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features
 from sklearn.metrics import roc_auc_score
 
 def setup_seed(seed):
@@ -72,6 +73,12 @@ def test(args):
     model.to(device)
     model.visual.DAPM_replace(DPAM_layer = 20)
 
+    conditioner = None
+    if checkpoint.get("extent_cond"):
+        conditioner = ExtentConditioner(mode=checkpoint["extent_cond"]).to(device)
+        conditioner.load_state_dict(checkpoint["conditioner"])
+        conditioner.eval()
+
     prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
     text_features = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
     text_features = torch.stack(torch.chunk(text_features, dim = 0, chunks = 2), dim = 1)
@@ -93,6 +100,11 @@ def test(args):
         with torch.no_grad():
             image_features, patch_features = model.encode_image(image, features_list, DPAM_layer = 20)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+
+            if conditioner is not None:
+                z_override = area_to_z(gt_mask.reshape(1, -1).mean(1).to(device)) if args.ec_oracle else None
+                _, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features), z_override=z_override)
+                text_features = conditioned_text_features(model, prompt_learner, c_pos, c_neg)
 
             text_probs = image_features @ text_features.permute(0, 2, 1)
             text_probs = (text_probs/0.07).softmax(-1)
@@ -156,6 +168,11 @@ def test(args):
             table.append(str(np.round(image_ap * 100, decimals=1)))
             image_auroc_list.append(image_auroc)
             image_ap_list.append(image_ap) 
+        elif args.metrics == 'pixel-auroc':
+            # fast mode: skips the (slow) PRO computation
+            pixel_auroc = pixel_level_metrics(results, obj, "pixel-auroc")
+            table.append(str(np.round(pixel_auroc * 100, decimals=1)))
+            pixel_auroc_list.append(pixel_auroc)
         elif args.metrics == 'pixel-level':
             pixel_auroc = pixel_level_metrics(results, obj, "pixel-auroc")
             pixel_aupro = pixel_level_metrics(results, obj, "pixel-aupro")
@@ -184,6 +201,9 @@ def test(args):
                         str(np.round(np.mean(image_auroc_list) * 100, decimals=1)),
                         str(np.round(np.mean(image_ap_list) * 100, decimals=1))])
         results = tabulate(table_ls, headers=['objects', 'image_auroc', 'image_ap'], tablefmt="pipe")
+    elif args.metrics == 'pixel-auroc':
+        table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1))])
+        results = tabulate(table_ls, headers=['objects', 'pixel_auroc'], tablefmt="pipe")
     elif args.metrics == 'pixel-level':
         # logger
         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1)),
@@ -217,6 +237,8 @@ if __name__ == '__main__':
     parser.add_argument("--metrics", type=str, default='image-pixel-level')
     parser.add_argument("--seed", type=int, default=111, help="random seed")
     parser.add_argument("--sigma", type=int, default=4, help="zero shot")
+    parser.add_argument("--ec_oracle", action="store_true",
+                        help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     
     args = parser.parse_args()
     print(args)

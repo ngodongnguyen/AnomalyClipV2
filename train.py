@@ -12,6 +12,8 @@ import numpy as np
 import os
 import random
 from utils import get_transform
+from extent_prompt import (ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features,
+                           batched_similarity)
 
 
 def roi_resample(feat_map, boxes_norm, out_size):
@@ -102,7 +104,12 @@ def train(args):
     model.to(device)
     model.visual.DAPM_replace(DPAM_layer = 20)
     ##########################################################################################
-    optimizer = torch.optim.Adam(list(prompt_learner.parameters()), lr=args.learning_rate, betas=(0.5, 0.999))
+    conditioner = None
+    if args.extent_cond != "none":
+        assert args.consistency_weight == 0, "extent conditioning is not combined with the consistency loss"
+        conditioner = ExtentConditioner(mode=args.extent_cond).to(device)
+    params = list(prompt_learner.parameters()) + (list(conditioner.parameters()) if conditioner is not None else [])
+    optimizer = torch.optim.Adam(params, lr=args.learning_rate, betas=(0.5, 0.999))
 
     # losses
     loss_focal = FocalLoss()
@@ -115,9 +122,12 @@ def train(args):
     for epoch in tqdm(range(args.epoch)):
         model.eval()
         prompt_learner.train()
+        if conditioner is not None:
+            conditioner.train()
         loss_list = []
         image_loss_list = []
         consistency_loss_list = []
+        extent_err_list = []
 
         for items in tqdm(train_dataloader):
             image = items['img'].to(device)
@@ -136,13 +146,31 @@ def train(args):
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                     
            ####################################
-            prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
-            text_features = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
-            text_features = torch.stack(torch.chunk(text_features, dim = 0, chunks = 2), dim = 1)
-            text_features = text_features/text_features.norm(dim=-1, keepdim=True)
-            # Apply DPAM surgery
-            text_probs = image_features.unsqueeze(1) @ text_features.permute(0, 2, 1)
-            text_probs = text_probs[:, 0, ...]/0.07
+            extent_loss = torch.tensor(0.0, device=device)
+            if conditioner is None:
+                prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
+                text_features = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
+                text_features = torch.stack(torch.chunk(text_features, dim = 0, chunks = 2), dim = 1)
+                text_features = text_features/text_features.norm(dim=-1, keepdim=True)
+                # Apply DPAM surgery
+                text_probs = image_features.unsqueeze(1) @ text_features.permute(0, 2, 1)
+                text_probs = text_probs[:, 0, ...]/0.07
+            else:
+                lab = label.long().to(device)
+                area = gt.reshape(image.shape[0], -1).mean(1)
+                z_gt = area_to_z(area)
+                desc = visual_descriptor(image_features, patch_features)
+                z_teacher = None
+                if args.extent_cond == "extent" and args.ec_teacher_p > 0:
+                    use_gt = (torch.rand_like(z_gt) < args.ec_teacher_p) & (lab == 1)
+                    z_pred_free = conditioner.estimator(desc).squeeze(-1)
+                    z_teacher = torch.where(use_gt, z_gt, z_pred_free.detach())
+                z_pred, c_pos, c_neg = conditioner(desc, z_override=z_teacher)
+                if z_pred is not None and (lab == 1).any():
+                    extent_loss = F.smooth_l1_loss(z_pred[lab == 1], z_gt[lab == 1])
+                    extent_err_list.append((z_pred[lab == 1] - z_gt[lab == 1]).abs().mean().item())
+                text_features = conditioned_text_features(model, prompt_learner, c_pos, c_neg)
+                text_probs = torch.einsum("bc,btc->bt", image_features, text_features) / 0.07
             image_loss = F.cross_entropy(text_probs.squeeze(), label.long().cuda())
             image_loss_list.append(image_loss.item())
             #########################################################################
@@ -151,7 +179,10 @@ def train(args):
             for idx, patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
-                    similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
+                    if conditioner is None:
+                        similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
+                    else:
+                        similarity = batched_similarity(patch_feature, text_features)
                     similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
                     similarity_map_list.append(similarity_map)
 
@@ -182,19 +213,24 @@ def train(args):
                 consistency_loss_list.append(consistency_loss.item())
 
             optimizer.zero_grad()
-            (loss + image_loss + args.consistency_weight * consistency_loss).backward()
+            (loss + image_loss + args.consistency_weight * consistency_loss + args.ec_weight * extent_loss).backward()
             optimizer.step()
             loss_list.append(loss.item())
         # logs
         if (epoch + 1) % args.print_freq == 0:
-            logger.info('epoch [{}/{}], loss:{:.4f}, image_loss:{:.4f}, consistency_loss:{:.4f}'.format(
+            logger.info('epoch [{}/{}], loss:{:.4f}, image_loss:{:.4f}, consistency_loss:{:.4f}, extent_abs_err(z):{:.4f}'.format(
                 epoch + 1, args.epoch, np.mean(loss_list), np.mean(image_loss_list),
-                np.mean(consistency_loss_list) if consistency_loss_list else 0.0))
+                np.mean(consistency_loss_list) if consistency_loss_list else 0.0,
+                np.mean(extent_err_list) if extent_err_list else 0.0))
 
         # save model
         if (epoch + 1) % args.save_freq == 0:
             ckp_path = os.path.join(args.save_path, 'epoch_' + str(epoch + 1) + '.pth')
-            torch.save({"prompt_learner": prompt_learner.state_dict()}, ckp_path)
+            ckpt = {"prompt_learner": prompt_learner.state_dict()}
+            if conditioner is not None:
+                ckpt["conditioner"] = conditioner.state_dict()
+                ckpt["extent_cond"] = args.extent_cond
+            torch.save(ckpt, ckp_path)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser("AnomalyCLIP", add_help=True)
@@ -229,6 +265,11 @@ if __name__ == '__main__':
     parser.add_argument("--consistency_scale_a_max", type=float, default=0.15)
     parser.add_argument("--consistency_scale_b_min", type=float, default=0.25)
     parser.add_argument("--consistency_scale_b_max", type=float, default=0.45)
+    parser.add_argument("--extent_cond", type=str, default="none", choices=["none", "extent", "global"],
+                         help="none = original prompts; extent = extent-conditioned prompts; global = image-conditioned control")
+    parser.add_argument("--ec_weight", type=float, default=1.0, help="weight of the extent-estimation loss")
+    parser.add_argument("--ec_teacher_p", type=float, default=0.5,
+                         help="prob. of conditioning on the ground-truth extent (anomalous images) instead of the estimate")
     args = parser.parse_args()
     setup_seed(args.seed)
     train(args)
