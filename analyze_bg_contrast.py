@@ -82,7 +82,7 @@ def run(args):
             abn_native = ((sim_native[..., 1] + 1 - sim_native[..., 0]) / 2.0)[0]  # [side, side]
             feat_native = pf[0, 1:, :].reshape(side, side, -1)  # already L2-normalized
 
-            row = {"image": os.path.basename(img_path), **desc}
+            row = {"image": os.path.basename(img_path), "log_area": desc["log_area"]}
             base_up = F.interpolate(abn_native[None, None], size=(E, E), mode="bilinear",
                                      align_corners=False)[0, 0].cpu().numpy()
             base_smooth = gauss(base_up, sg)
