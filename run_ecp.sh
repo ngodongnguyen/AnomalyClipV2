@@ -12,10 +12,10 @@ MVTEC=/home/ai3/NguyenND/AnomalyClipV2/data/mvtec
 CVC=/home/ai3/NguyenND/AnomalyClipV2/data/CVC
 COMMON="--features_list 24 --image_size 518 --depth 9 --n_ctx 12 --t_n_ctx 4"
 
-train () {  # $1 = name, $2 = extent_cond, $3 = epochs
+train () {  # $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed (default 111)
   CUDA_VISIBLE_DEVICES=$DEV python train.py --dataset mvtec --train_data_path $MVTEC \
     --save_path ./checkpoints/$1/ $COMMON --batch_size 8 --print_freq 1 \
-    --epoch $3 --save_freq 1 --seed 111 --zoom_aug_p $ZOOM --extent_cond $2
+    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2
 }
 
 test_all () {  # $1 = checkpoint name, $2 = results tag, $3 = extra test flags
@@ -33,5 +33,10 @@ case "$1" in
   test_extent)   test_all ecp_extent ecp_extent "" ;;
   test_global)   test_all ecp_global ecp_global "" ;;
   test_oracle)   test_all ecp_extent ecp_extent_oracle "--ec_oracle" ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle}" ;;
+  # more seeds for the method:  bash run_ecp.sh train_seed 222   then   bash run_ecp.sh test_seed 222
+  train_seed)    train ecp_extent_s$2 extent 15 $2 ;;
+  test_seed)     test_all ecp_extent_s$2 ecp_extent_s$2 "" ;;
+  # smoothing check (the strong baseline):  bash run_ecp.sh test_sigma <checkpoint_name> 32
+  test_sigma)    test_all $2 ${2}_sigma$3 "--sigma $3" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA}" ;;
 esac
