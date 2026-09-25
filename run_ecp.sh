@@ -38,5 +38,9 @@ case "$1" in
   test_seed)     test_all ecp_extent_s$2 ecp_extent_s$2 "" ;;
   # smoothing check (the strong baseline):  bash run_ecp.sh test_sigma <checkpoint_name> 32
   test_sigma)    test_all $2 ${2}_sigma$3 "--sigma $3" ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA}" ;;
+  # industrial regression check (train on MVTec, test on VisA):  bash run_ecp.sh test_visa <checkpoint_name>
+  test_visa)     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset visa \
+                   --data_path /home/ai3/NguyenND/AnomalyClipV2/data/visa --save_path ./results/$2/visa \
+                   --checkpoint_path ./checkpoints/$2/epoch_15.pth $COMMON --metrics image-pixel-level ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_visa CKPT}" ;;
 esac
