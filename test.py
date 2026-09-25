@@ -86,6 +86,7 @@ def test(args):
 
 
     bad_case_records = []
+    per_image_rows = []
 
     model.to(device)
     for idx, items in enumerate(tqdm(test_dataloader)):
@@ -137,6 +138,11 @@ def test(args):
                 filename = img_path.split('/')[-1]
                 vis_path = os.path.join(args.save_path, 'imgs', cls_name[0], cls, filename)
                 bad_case_records.append((score, img_path, vis_path))
+                per_image_rows.append((img_path, float(gt_flat.mean()), float(score)))
+
+    with open(os.path.join(args.save_path, 'per_image.csv'), 'w') as f:
+        f.write('image,area_frac,auroc\n')
+        f.writelines(f'{p},{a:.6f},{s:.6f}\n' for p, a, s in per_image_rows)
 
     bad_case_records.sort(key=lambda x: x[0])
     bad_cases_dir = os.path.join(args.save_path, 'bad_cases')
