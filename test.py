@@ -102,9 +102,14 @@ def test(args):
             image_features, patch_features = model.encode_image(image, features_list, DPAM_layer = 20)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
+            z_pred_val = z_gt_val = float('nan')
             if conditioner is not None:
-                z_override = area_to_z(gt_mask.reshape(1, -1).mean(1).to(device)) if args.ec_oracle else None
-                _, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features), z_override=z_override)
+                z_gt = area_to_z(gt_mask.reshape(1, -1).mean(1).to(device))
+                z_pred, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features),
+                                                   z_override=z_gt if args.ec_oracle else None)
+                z_gt_val = float(z_gt[0])
+                if z_pred is not None:
+                    z_pred_val = float(z_pred[0])
                 text_features = conditioned_text_features(model, prompt_learner, c_pos, c_neg)
 
             text_probs = image_features @ text_features.permute(0, 2, 1)
@@ -138,11 +143,11 @@ def test(args):
                 filename = img_path.split('/')[-1]
                 vis_path = os.path.join(args.save_path, 'imgs', cls_name[0], cls, filename)
                 bad_case_records.append((score, img_path, vis_path))
-                per_image_rows.append((img_path, float(gt_flat.mean()), float(score)))
+                per_image_rows.append((img_path, float(gt_flat.mean()), float(score), z_pred_val, z_gt_val))
 
     with open(os.path.join(args.save_path, 'per_image.csv'), 'w') as f:
-        f.write('image,area_frac,auroc\n')
-        f.writelines(f'{p},{a:.6f},{s:.6f}\n' for p, a, s in per_image_rows)
+        f.write('image,area_frac,auroc,z_pred,z_gt\n')
+        f.writelines(f'{p},{a:.6f},{s:.6f},{zp:.6f},{zg:.6f}\n' for p, a, s, zp, zg in per_image_rows)
 
     bad_case_records.sort(key=lambda x: x[0])
     bad_cases_dir = os.path.join(args.save_path, 'bad_cases')
