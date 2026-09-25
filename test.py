@@ -105,8 +105,13 @@ def test(args):
             z_pred_val = z_gt_val = float('nan')
             if conditioner is not None:
                 z_gt = area_to_z(gt_mask.reshape(1, -1).mean(1).to(device))
-                z_pred, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features),
-                                                   z_override=z_gt if args.ec_oracle else None)
+                if args.ec_oracle:
+                    z_used = z_gt
+                elif args.ec_const_z is not None:
+                    z_used = torch.full_like(z_gt, args.ec_const_z)
+                else:
+                    z_used = None
+                z_pred, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features), z_override=z_used)
                 z_gt_val = float(z_gt[0])
                 if z_pred is not None:
                     z_pred_val = float(z_pred[0])
@@ -248,6 +253,8 @@ if __name__ == '__main__':
     parser.add_argument("--metrics", type=str, default='image-pixel-level')
     parser.add_argument("--seed", type=int, default=111, help="random seed")
     parser.add_argument("--sigma", type=int, default=4, help="zero shot")
+    parser.add_argument("--ec_const_z", type=float, default=None,
+                        help="diagnostic only: condition every image on the same extent z (ignores the estimator)")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     

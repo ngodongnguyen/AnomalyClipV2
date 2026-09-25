@@ -39,11 +39,12 @@ case "$1" in
   # smoothing check (the strong baseline):  bash run_ecp.sh test_sigma <checkpoint_name> 32
   test_sigma)    test_all $2 ${2}_sigma$3 "--sigma $3" ;;
   # fast per-image AUROC dump (no PRO) for the size-stratified comparison:  bash run_ecp.sh per_image <checkpoint_name> [sigma]
+  # optional 4th arg = extra test flags (e.g. "--ec_oracle" or "--ec_const_z 1.0"), 5th = results tag suffix
   per_image)
     for D in CVC-ClinicDB Kvasir CVC-ColonDB; do
       CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $CVC/$D \
-        --save_path ./results/${2}_pi/$D --checkpoint_path ./checkpoints/$2/epoch_15.pth \
-        $COMMON --metrics pixel-auroc --sigma ${3:-4}
+        --save_path ./results/${2}${5:-}_pi/$D --checkpoint_path ./checkpoints/$2/epoch_15.pth \
+        $COMMON --metrics pixel-auroc --sigma ${3:-4} ${4:-}
     done ;;
   # held-out medical datasets (ISIC skin, Endo polyp, TN3K thyroid ultrasound):  bash run_ecp.sh test_heldout <checkpoint_name> [sigma]
   # optional 4th arg = extra flags (e.g. "--ec_oracle") and 5th = results tag suffix
