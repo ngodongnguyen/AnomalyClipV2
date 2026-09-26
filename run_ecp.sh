@@ -30,6 +30,8 @@ case "$1" in
   smoke)         train ecp_smoke extent 1 ;;
   train_extent)  train ecp_extent extent 15 ;;
   train_global)  train ecp_global global 15 ;;
+  # control: plain zoom augmentation on EVERY anomalous image (no module). If it matches ECP with const z=1.2, ECP adds nothing.
+  train_zoom1)   ZOOM=1.0; train zoom_p1 none 15 ;;
   test_extent)   test_all ecp_extent ecp_extent "" ;;
   test_global)   test_all ecp_global ecp_global "" ;;
   test_oracle)   test_all ecp_extent ecp_extent_oracle "--ec_oracle" ;;
