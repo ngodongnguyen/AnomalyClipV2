@@ -47,8 +47,8 @@ case "$1" in
     for D in CVC-ClinicDB Kvasir CVC-ColonDB; do
       CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $CVC/$D \
         --save_path ./results/${2}${5:-}_pi/$D --checkpoint_path ./checkpoints/$2/epoch_15.pth \
-        $COMMON --metrics pixel-auroc --sigma ${3:-4} ${4:-}
-    done ;;
+        $COMMON --metrics ${METRICS:-pixel-level} --sigma ${3:-4} ${4:-}
+    done ;;   # prints AUROC and PRO; set METRICS=pixel-auroc for the fast (no PRO) mode
   # held-out medical datasets (ISIC skin, Endo polyp, TN3K thyroid ultrasound):  bash run_ecp.sh test_heldout <checkpoint_name> [sigma]
   # optional 4th arg = extra flags (e.g. "--ec_oracle") and 5th = results tag suffix
   test_heldout)
