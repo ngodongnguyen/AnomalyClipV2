@@ -59,5 +59,13 @@ case "$1" in
       --save_path ./results/$2$T/endo_s$S --checkpoint_path ./checkpoints/$2/epoch_15.pth $COMMON --metrics pixel-level --sigma $S $X
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" \
       --save_path ./results/$2$T/tn3k_s$S --checkpoint_path ./checkpoints/$2/epoch_15.pth $COMMON --metrics pixel-level --sigma $S $X ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]}" ;;
+  # image-level-only classification datasets (HeadCT, BrainMRI, Br35H): bash run_ecp.sh test_cls <checkpoint_name> [extra flags]
+  test_cls)
+    A=/home/ai3/NguyenND/AnomalyClipV2/data
+    for DIR in HeadCT_anomaly_detection BrainMRI br35; do
+      CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset brain --data_path $A/$DIR \
+        --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
+        $COMMON --metrics image-level ${3:-}
+    done ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|test_cls CKPT [FLAGS]}" ;;
 esac
