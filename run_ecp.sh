@@ -67,5 +67,17 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|test_cls CKPT [FLAGS]}" ;;
+  # domain-level z calibration on unlabeled images (no labels used for the decision): bash run_ecp.sh calibrate
+  calibrate)
+    A=/home/ai3/NguyenND/AnomalyClipV2/data; CK=./checkpoints/ecp_extent/epoch_15.pth
+    python calibrate_z_domain.py --dataset colon --data_path $A/CVC/CVC-ClinicDB --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset colon --data_path $A/CVC/Kvasir --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset colon --data_path $A/CVC/CVC-ColonDB --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset ISBI --data_path $A/ISIC --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset colon --data_path $A/EndoTect_2020_Segmentation_Test_Dataset --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset brain --data_path $A/HeadCT_anomaly_detection --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset brain --data_path $A/BrainMRI --checkpoint_path $CK
+    python calibrate_z_domain.py --dataset brain --data_path $A/br35 --checkpoint_path $CK ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac
