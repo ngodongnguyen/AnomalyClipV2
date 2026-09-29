@@ -80,9 +80,9 @@ def test(args):
         conditioner.eval()
 
     prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
-    text_features = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
-    text_features = torch.stack(torch.chunk(text_features, dim = 0, chunks = 2), dim = 1)
-    text_features = text_features/text_features.norm(dim=-1, keepdim=True)
+    text_features_base = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
+    text_features_base = torch.stack(torch.chunk(text_features_base, dim = 0, chunks = 2), dim = 1)
+    text_features_base = text_features_base/text_features_base.norm(dim=-1, keepdim=True)
 
 
     bad_case_records = []
@@ -102,29 +102,37 @@ def test(args):
             image_features, patch_features = model.encode_image(image, features_list, DPAM_layer = 20)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
+            # Per-head operating point on the learned extent axis: the image-level (CLS) head and the pixel
+            # (patch) head can each use their own fixed z (--ec_z_img / --ec_z_pix). --ec_const_z applies one z
+            # to both heads; with neither, both heads use the extent estimator.
+            text_features_img = text_features_pix = text_features_base
             z_pred_val = z_gt_val = float('nan')
             if conditioner is not None:
+                desc = visual_descriptor(image_features, patch_features)
                 z_gt = area_to_z(gt_mask.reshape(1, -1).mean(1).to(device))
-                if args.ec_oracle:
-                    z_used = z_gt
-                elif args.ec_const_z is not None:
-                    z_used = torch.full_like(z_gt, args.ec_const_z)
-                else:
-                    z_used = None
-                z_pred, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features), z_override=z_used)
                 z_gt_val = float(z_gt[0])
+
+                def text_at(z_value):
+                    z_t = None if z_value is None else (z_gt if z_value == 'oracle' else torch.full_like(z_gt, z_value))
+                    z_pred, c_pos, c_neg = conditioner(desc, z_override=z_t)
+                    return z_pred, conditioned_text_features(model, prompt_learner, c_pos, c_neg)
+
+                shared = 'oracle' if args.ec_oracle else args.ec_const_z
+                z_img = args.ec_z_img if args.ec_z_img is not None else shared
+                z_pix = args.ec_z_pix if args.ec_z_pix is not None else shared
+                z_pred, text_features_pix = text_at(z_pix)
+                text_features_img = text_features_pix if z_img == z_pix else text_at(z_img)[1]
                 if z_pred is not None:
                     z_pred_val = float(z_pred[0])
-                text_features = conditioned_text_features(model, prompt_learner, c_pos, c_neg)
 
-            text_probs = image_features @ text_features.permute(0, 2, 1)
+            text_probs = image_features @ text_features_img.permute(0, 2, 1)
             text_probs = (text_probs/0.07).softmax(-1)
             text_probs = text_probs[:, 0, 1]
             anomaly_map_list = []
             for idx, patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
-                    similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
+                    similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
                     similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
                     anomaly_map = (similarity_map[...,1] + 1 - similarity_map[...,0])/2.0
                     # The following code is equivalent. 
@@ -254,7 +262,11 @@ if __name__ == '__main__':
     parser.add_argument("--seed", type=int, default=111, help="random seed")
     parser.add_argument("--sigma", type=int, default=4, help="zero shot")
     parser.add_argument("--ec_const_z", type=float, default=None,
-                        help="diagnostic only: condition every image on the same extent z (ignores the estimator)")
+                        help="condition every image on the same extent z, for BOTH heads (ignores the estimator)")
+    parser.add_argument("--ec_z_img", type=float, default=None,
+                        help="fixed z for the image-level (CLS) head only; overrides --ec_const_z for that head")
+    parser.add_argument("--ec_z_pix", type=float, default=None,
+                        help="fixed z for the pixel (patch) head only; overrides --ec_const_z for that head")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     

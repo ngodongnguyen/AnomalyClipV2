@@ -67,6 +67,24 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
+  # ONE fixed config for every dataset: image head z=$ZI, pixel head z=$ZP.  bash run_ecp.sh fixed [ZI] [ZP]
+  fixed)
+    ZI=${2:--0.69}; ZP=${3:-1.6}; A=/home/ai3/NguyenND/AnomalyClipV2/data; F="--ec_z_img $ZI --ec_z_pix $ZP"
+    CKP=./checkpoints/ecp_extent/epoch_15.pth; OUT=./results/ecp_fixed_i${ZI}_p${ZP}
+    for D in CVC-ClinicDB Kvasir CVC-ColonDB; do
+      CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $CVC/$D --save_path $OUT/$D \
+        --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    done
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset ISBI --data_path $A/ISIC --save_path $OUT/isic \
+      --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $A/EndoTect_2020_Segmentation_Test_Dataset \
+      --save_path $OUT/endo --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" \
+      --save_path $OUT/tn3k --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    for DIR in HeadCT_anomaly_detection BrainMRI br35; do
+      CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset brain --data_path $A/$DIR --save_path $OUT/$DIR \
+        --checkpoint_path $CKP $COMMON --metrics image-level $F
+    done ;;
   # domain-level z calibration on unlabeled images (no labels used for the decision): bash run_ecp.sh calibrate
   calibrate)
     A=/home/ai3/NguyenND/AnomalyClipV2/data; CK=./checkpoints/ecp_extent/epoch_15.pth
