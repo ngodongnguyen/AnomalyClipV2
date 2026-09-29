@@ -31,6 +31,24 @@ from analyze_failure_factors import descriptors
 from extent_prompt import ExtentConditioner, visual_descriptor, conditioned_text_features
 
 
+def save_hot_panels(cases, out_dir):
+    """4 panels per case: image | GT | anomaly map | image with far false-positive hotspots red, GT contour green."""
+    os.makedirs(out_dir, exist_ok=True)
+    for rank, (fp, img_path, gt, amap, hot) in enumerate(cases, start=1):
+        h, w = gt.shape
+        img = np.array(Image.open(img_path).convert("RGB").resize((w, h), Image.BILINEAR))
+        gt_rgb = np.repeat((gt * 255).astype(np.uint8)[..., None], 3, axis=2)
+        a = (amap - amap.min()) / (amap.max() - amap.min() + 1e-8)
+        heat = np.stack([a * 255, (1 - np.abs(2 * a - 1)) * 255, (1 - a) * 255], axis=2).astype(np.uint8)
+        over = img.copy()
+        over[hot] = (0.4 * over[hot] + 0.6 * np.array([255, 0, 0])).astype(np.uint8)
+        edge = gt & ~(np.roll(gt, 1, 0) & np.roll(gt, -1, 0) & np.roll(gt, 1, 1) & np.roll(gt, -1, 1))
+        over[edge] = (0, 255, 0)
+        panel = np.concatenate([img, gt_rgb, heat, over], axis=1)
+        base = os.path.splitext(os.path.basename(img_path))[0]
+        Image.fromarray(panel).save(os.path.join(out_dir, f"{rank:02d}_fphot{fp:.3f}_{base}.png"))
+
+
 def run(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     params = {"Prompt_length": args.n_ctx, "learnabel_text_embedding_depth": args.depth,
@@ -67,6 +85,7 @@ def run(args):
     far_cnt = {c: 0 for c in cats}
     hot_tot = far_tot = 0
     hot_by_img = {c: [] for c in cats}
+    keep = []  # (fp_hot, img_path, gt, amap, hot) downsampled, for rendering the worst cases
     for items in tqdm(loader):
         img_path = items["img_path"][0]
         gt = (items["img_mask"][0, 0].numpy() > 0.5)
@@ -136,6 +155,8 @@ def run(args):
             far_cnt[c] += int((far & masks[c]).sum())
             if hot.sum() > 0:
                 hot_by_img[c].append(float((hot & masks[c]).sum() / hot.sum()))
+        if args.save_hot:
+            keep.append((row["fp_hot"], img_path, gt[::2, ::2], amap[::2, ::2], hot[::2, ::2]))
         row["area_frac"] = float(np.exp(desc["log_area"]))
         for name_, key in (("auc_core_far", "core"), ("auc_band_far", "band_in")):
             pos, neg = amap[regions[key]], amap[regions["far_out"]]
@@ -144,6 +165,8 @@ def run(args):
         rows.append(row)
 
     name = os.path.basename(args.data_path.rstrip("/"))
+    if args.save_hot:
+        save_hot_panels(sorted(keep, key=lambda k: -k[0])[: args.save_hot], os.path.join(args.hot_dir, name))
     out_csv = args.out_csv or f"core_boundary_{args.dataset}_{name}.csv"
     cols = ["image", "log_area", "tex_ratio", "core", "band_in", "band_out", "far_out", "core_minus_band",
             "area_frac", "auc_core_far", "auc_band_far", "fp_hot"]
@@ -206,6 +229,8 @@ if __name__ == "__main__":
     ap.add_argument("--t_n_ctx", type=int, default=4)
     ap.add_argument("--feature_map_layer", type=int, nargs="+", default=[0])
     ap.add_argument("--sigma", type=int, default=4)
+    ap.add_argument("--save_hot", type=int, default=0, help="render the N images with the most false-positive hotspots")
+    ap.add_argument("--hot_dir", type=str, default="hotspots")
     ap.add_argument("--ec_z_pix", type=float, default=None,
                     help="ECP checkpoint: fixed z for the pixel head (omit for plain checkpoints)")
     args = ap.parse_args()

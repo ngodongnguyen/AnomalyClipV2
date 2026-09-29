@@ -74,7 +74,7 @@ case "$1" in
              "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
       DS=${P%% *}; DP=${P#* }
       CUDA_VISIBLE_DEVICES=$DEV python analyze_core_boundary.py --dataset $DS --data_path "$DP" \
-        --checkpoint_path $CK --out_csv core_boundary_$2_$(basename "$DP").csv $X
+        --checkpoint_path $CK --out_csv core_boundary_$2_$(basename "$DP").csv $X ${4:-}
     done ;;
   # industrial check (standard protocol: MVTec-trained model tested on VisA): bash run_ecp.sh test_visa <ckpt> [flags]
   test_visa)
