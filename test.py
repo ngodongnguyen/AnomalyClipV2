@@ -87,6 +87,9 @@ def test(args):
 
     bad_case_records = []
     per_image_rows = []
+    # image-level metrics only need one score per image; keeping full-res maps/masks for every image
+    # exhausts RAM on large sets (21k COVID images -> ~45 GB, process OOM-killed)
+    need_pixel = args.metrics != 'image-level'
 
     model.to(device)
     for idx, items in enumerate(tqdm(test_dataloader)):
@@ -95,7 +98,8 @@ def test(args):
         cls_id = items['cls_id']
         gt_mask = items['img_mask']
         gt_mask[gt_mask > 0.5], gt_mask[gt_mask <= 0.5] = 1, 0
-        results[cls_name[0]]['imgs_masks'].append(gt_mask)  # px
+        if need_pixel:
+            results[cls_name[0]]['imgs_masks'].append(gt_mask)  # px
         results[cls_name[0]]['gt_sp'].extend(items['anomaly'].detach().cpu())
 
         with torch.no_grad():
@@ -128,6 +132,9 @@ def test(args):
             text_probs = image_features @ text_features_img.permute(0, 2, 1)
             text_probs = (text_probs/0.07).softmax(-1)
             text_probs = text_probs[:, 0, 1]
+            results[cls_name[0]]['pr_sp'].extend(text_probs.detach().cpu())
+            if not need_pixel:
+                continue
             anomaly_map_list = []
             for idx, patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
@@ -142,7 +149,6 @@ def test(args):
             anomaly_map = torch.stack(anomaly_map_list)
             
             anomaly_map = anomaly_map.sum(dim = 0)
-            results[cls_name[0]]['pr_sp'].extend(text_probs.detach().cpu())
             anomaly_map = torch.stack([torch.from_numpy(gaussian_filter(i, sigma = args.sigma)) for i in anomaly_map.detach().cpu()], dim = 0 )
             results[cls_name[0]]['anomaly_maps'].append(anomaly_map)
             visualizer(items['img_path'], anomaly_map.detach().cpu().numpy(), args.image_size, args.save_path, cls_name, gt_mask.detach().cpu().numpy())
@@ -183,8 +189,9 @@ def test(args):
     for obj in obj_list:
         table = []
         table.append(obj)
-        results[obj]['imgs_masks'] = torch.cat(results[obj]['imgs_masks'])
-        results[obj]['anomaly_maps'] = torch.cat(results[obj]['anomaly_maps']).detach().cpu().numpy()
+        if need_pixel:
+            results[obj]['imgs_masks'] = torch.cat(results[obj]['imgs_masks'])
+            results[obj]['anomaly_maps'] = torch.cat(results[obj]['anomaly_maps']).detach().cpu().numpy()
         if args.metrics == 'image-level':
             image_auroc = image_level_metrics(results, obj, "image-auroc")
             image_ap = image_level_metrics(results, obj, "image-ap")
