@@ -67,6 +67,15 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
+  # spatial error decomposition (core cold / rim bleed / far false-positive hotspots): bash run_ecp.sh diag_cb <ckpt> [z_pix]
+  diag_cb)
+    A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; CK=./checkpoints/$2/epoch_15.pth
+    for P in "colon $CVC/CVC-ClinicDB" "colon $CVC/Kvasir" "colon $CVC/CVC-ColonDB" "ISBI $A/ISIC" \
+             "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
+      DS=${P%% *}; DP=${P#* }
+      CUDA_VISIBLE_DEVICES=$DEV python analyze_core_boundary.py --dataset $DS --data_path "$DP" \
+        --checkpoint_path $CK --out_csv core_boundary_$2_$(basename "$DP").csv $X
+    done ;;
   # industrial check (standard protocol: MVTec-trained model tested on VisA): bash run_ecp.sh test_visa <ckpt> [flags]
   test_visa)
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset visa --data_path /home/ai3/NguyenND/AnomalyClipV2/data/visa \

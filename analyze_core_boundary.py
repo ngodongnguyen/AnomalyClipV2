@@ -28,6 +28,7 @@ from prompt_ensemble import AnomalyCLIP_PromptLearner
 from dataset import Dataset
 from utils import get_transform
 from analyze_failure_factors import descriptors
+from extent_prompt import ExtentConditioner, visual_descriptor, conditioned_text_features
 
 
 def run(args):
@@ -54,6 +55,12 @@ def run(args):
     text_features = torch.stack(torch.chunk(text_features, dim=0, chunks=2), dim=1)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
+    conditioner = None
+    if args.ec_z_pix is not None:
+        conditioner = ExtentConditioner(mode=ckpt["extent_cond"]).to(device)
+        conditioner.load_state_dict(ckpt["conditioner"])
+        conditioner.eval()
+
     rows = []
     for items in tqdm(loader):
         img_path = items["img_path"][0]
@@ -65,12 +72,18 @@ def run(args):
             continue
 
         with torch.no_grad():
-            _, patch_features = model.encode_image(items["img"].to(device), args.features_list, DPAM_layer=20)
+            image_features, patch_features = model.encode_image(items["img"].to(device), args.features_list, DPAM_layer=20)
+            tf = text_features
+            if conditioner is not None:
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                z = torch.full((1,), args.ec_z_pix, device=device)
+                _, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features), z_override=z)
+                tf = conditioned_text_features(model, prompt_learner, c_pos, c_neg)
             maps = []
             for idx, pf in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     pf = pf / pf.norm(dim=-1, keepdim=True)
-                    sim, _ = AnomalyCLIP_lib.compute_similarity(pf, text_features[0])
+                    sim, _ = AnomalyCLIP_lib.compute_similarity(pf, tf[0])
                     sm = AnomalyCLIP_lib.get_similarity_map(sim[:, 1:, :], args.image_size)
                     maps.append((sm[..., 1] + 1 - sm[..., 0]) / 2.0)
             amap = torch.stack(maps).sum(0)[0].cpu().numpy()
@@ -97,6 +110,8 @@ def run(args):
         for k, m in regions.items():
             row[k] = float(pct[m].mean())
         row["core_minus_band"] = row["core"] - row["band_in"]
+        # false-positive hotspots: share of far-from-lesion healthy pixels scoring above the lesion's median score
+        row["fp_hot"] = float((amap[regions["far_out"]] > np.median(amap[gt])).mean())
         row["area_frac"] = float(np.exp(desc["log_area"]))
         for name_, key in (("auc_core_far", "core"), ("auc_band_far", "band_in")):
             pos, neg = amap[regions[key]], amap[regions["far_out"]]
@@ -107,7 +122,7 @@ def run(args):
     name = os.path.basename(args.data_path.rstrip("/"))
     out_csv = args.out_csv or f"core_boundary_{args.dataset}_{name}.csv"
     cols = ["image", "log_area", "tex_ratio", "core", "band_in", "band_out", "far_out", "core_minus_band",
-            "area_frac", "auc_core_far", "auc_band_far"]
+            "area_frac", "auc_core_far", "auc_band_far", "fp_hot"]
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -121,7 +136,9 @@ def run(args):
           f"| core<band_in in {100 * (arr['core_minus_band'] < 0).mean():.0f}% of images")
 
     edges = np.quantile(arr["log_area"], [0, .25, .5, .75, 1])
-    print(f"\n{'area quartile':<16}{'n':>5}{'area':>7}{'core':>8}{'band_in':>9}{'band_out':>10}{'far_out':>9}{'core-band':>11}{'AUC core/far':>14}{'AUC band/far':>14}")
+    print(f"false-positive hotspots: {100 * arr['fp_hot'].mean():.1f}% of far healthy pixels outscore the lesion median;"
+          f" images with >5% such pixels: {100 * (arr['fp_hot'] > 0.05).mean():.0f}%")
+    print(f"\n{'area quartile':<16}{'n':>5}{'area':>7}{'core':>8}{'band_in':>9}{'band_out':>10}{'far_out':>9}{'core-band':>11}{'AUC core/far':>14}{'AUC band/far':>14}{'fp_hot':>8}")
     for q in range(4):
         lo, hi = edges[q], edges[q + 1]
         sel = (arr["log_area"] >= lo) & ((arr["log_area"] < hi) if q < 3 else (arr["log_area"] <= hi))
@@ -130,7 +147,8 @@ def run(args):
               f"{arr['core'][sel].mean():>8.3f}{arr['band_in'][sel].mean():>9.3f}"
               f"{arr['band_out'][sel].mean():>10.3f}{arr['far_out'][sel].mean():>9.3f}"
               f"{arr['core_minus_band'][sel].mean():>+11.3f}"
-              f"{arr['auc_core_far'][sel].mean():>14.3f}{arr['auc_band_far'][sel].mean():>14.3f}")
+              f"{arr['auc_core_far'][sel].mean():>14.3f}{arr['auc_band_far'][sel].mean():>14.3f}"
+              f"{arr['fp_hot'][sel].mean():>8.3f}")
 
     print("\nPearson corr of auc_core_far - auc_band_far (core lags rim) with:")
     lag = arr["auc_core_far"] - arr["auc_band_far"]
@@ -158,6 +176,8 @@ if __name__ == "__main__":
     ap.add_argument("--t_n_ctx", type=int, default=4)
     ap.add_argument("--feature_map_layer", type=int, nargs="+", default=[0])
     ap.add_argument("--sigma", type=int, default=4)
+    ap.add_argument("--ec_z_pix", type=float, default=None,
+                    help="ECP checkpoint: fixed z for the pixel head (omit for plain checkpoints)")
     args = ap.parse_args()
     print(args)
     run(args)
