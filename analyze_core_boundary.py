@@ -20,7 +20,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 from scipy import stats
-from scipy.ndimage import gaussian_filter, distance_transform_edt
+from scipy.ndimage import gaussian_filter, distance_transform_edt, sobel
 from sklearn.metrics import roc_auc_score
 
 import AnomalyCLIP_lib
@@ -62,6 +62,11 @@ def run(args):
         conditioner.eval()
 
     rows = []
+    cats = ("specular", "dark", "fov_border", "strong_edge")
+    hot_cnt = {c: 0 for c in cats}
+    far_cnt = {c: 0 for c in cats}
+    hot_tot = far_tot = 0
+    hot_by_img = {c: [] for c in cats}
     for items in tqdm(loader):
         img_path = items["img_path"][0]
         gt = (items["img_mask"][0, 0].numpy() > 0.5)
@@ -112,6 +117,25 @@ def run(args):
         row["core_minus_band"] = row["core"] - row["band_in"]
         # false-positive hotspots: share of far-from-lesion healthy pixels scoring above the lesion's median score
         row["fp_hot"] = float((amap[regions["far_out"]] > np.median(amap[gt])).mean())
+
+        # what are the hotspots? image properties of hot far pixels vs all far pixels (base rate)
+        far = regions["far_out"]
+        hot = far & (amap > np.median(amap[gt]))
+        g = rgb.astype(np.float64)
+        grad = np.hypot(sobel(g, 0), sobel(g, 1))
+        masks = {
+            "specular": rgb > 230,
+            "dark": (rgb < 40) & valid,
+            "fov_border": distance_transform_edt(np.pad(valid, 1))[1:-1, 1:-1] < 20,
+            "strong_edge": grad > np.quantile(grad[valid], 0.9),
+        }
+        hot_tot += int(hot.sum())
+        far_tot += int(far.sum())
+        for c in cats:
+            hot_cnt[c] += int((hot & masks[c]).sum())
+            far_cnt[c] += int((far & masks[c]).sum())
+            if hot.sum() > 0:
+                hot_by_img[c].append(float((hot & masks[c]).sum() / hot.sum()))
         row["area_frac"] = float(np.exp(desc["log_area"]))
         for name_, key in (("auc_core_far", "core"), ("auc_band_far", "band_in")):
             pos, neg = amap[regions[key]], amap[regions["far_out"]]
@@ -138,6 +162,12 @@ def run(args):
     edges = np.quantile(arr["log_area"], [0, .25, .5, .75, 1])
     print(f"false-positive hotspots: {100 * arr['fp_hot'].mean():.1f}% of far healthy pixels outscore the lesion median;"
           f" images with >5% such pixels: {100 * (arr['fp_hot'] > 0.05).mean():.0f}%")
+    print(f"\nWhat the hotspots are (pooled over images; enrichment = share among hot / share among all far pixels):")
+    print(f"{'category':<13}{'share of hot':>13}{'share of far':>13}{'enrichment':>12}")
+    for c in cats:
+        sh, sf = hot_cnt[c] / max(hot_tot, 1), far_cnt[c] / max(far_tot, 1)
+        print(f"{c:<13}{sh:>13.3f}{sf:>13.3f}{sh / max(sf, 1e-9):>12.2f}")
+    print(f"(hot far pixels: {hot_tot}; far pixels: {far_tot}; categories can overlap)")
     print(f"\n{'area quartile':<16}{'n':>5}{'area':>7}{'core':>8}{'band_in':>9}{'band_out':>10}{'far_out':>9}{'core-band':>11}{'AUC core/far':>14}{'AUC band/far':>14}{'fp_hot':>8}")
     for q in range(4):
         lo, hi = edges[q], edges[q + 1]
