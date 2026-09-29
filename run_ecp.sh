@@ -67,6 +67,11 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
+  # industrial check (standard protocol: MVTec-trained model tested on VisA): bash run_ecp.sh test_visa <ckpt> [flags]
+  test_visa)
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset visa --data_path /home/ai3/NguyenND/AnomalyClipV2/data/visa \
+      --save_path ./results/$2/visa --checkpoint_path ./checkpoints/$2/epoch_15.pth \
+      $COMMON --metrics image-pixel-level ${3:-} ;;
   # clean held-out check (never used for any design decision): bash run_ecp.sh test_covid <checkpoint_name> [extra flags]
   test_covid)
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset Chest \
