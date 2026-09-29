@@ -67,6 +67,12 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
+  # clean held-out check (never used for any design decision): bash run_ecp.sh test_covid <checkpoint_name> [extra flags]
+  test_covid)
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset Chest \
+      --data_path /home/ai3/NguyenND/AnomalyClipV2/data/COVID-19_Radiography_Dataset \
+      --save_path ./results/$2/covid --checkpoint_path ./checkpoints/$2/epoch_15.pth \
+      $COMMON --metrics image-level ${3:-} ;;
   # ONE fixed config for every dataset: image head z=$ZI, pixel head z=$ZP.  bash run_ecp.sh fixed [ZI] [ZP]
   fixed)
     ZI=${2:--0.69}; ZP=${3:-1.6}; A=/home/ai3/NguyenND/AnomalyClipV2/data; F="--ec_z_img $ZI --ec_z_pix $ZP"
