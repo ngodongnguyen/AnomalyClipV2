@@ -33,8 +33,34 @@ import AnomalyCLIP_lib
 from prompt_ensemble import AnomalyCLIP_PromptLearner
 from dataset import Dataset
 from utils import get_transform
+from extent_prompt import ExtentConditioner, visual_descriptor, conditioned_text_features
 
-FEATURES = ["log_area", "lab_contrast", "tex_ratio", "specular_frac", "dark_frac", "log_sharpness"]
+FEATURES = ["log_area", "lab_contrast", "tex_ratio", "specular_frac", "dark_frac", "log_sharpness",
+            "solidity", "compactness"]
+
+
+def shape_descriptors(gt):
+    """Scale-invariant boundary-shape descriptors of the largest lesion component in a binary mask.
+    solidity    : area / convex-hull area. 1.0 for any convex shape (circle, oval, even elongated ones);
+                  LOWER for a lobulated / budding / concave margin -- the morphology of irregular,
+                  laterally-spreading lesions, independent of how big or round-on-average the blob is.
+    compactness : 4*pi*area / perimeter^2 (isoperimetric ratio). 1.0 for a perfect circle; lower for an
+                  elongated OR a rough/irregular boundary (a jagged outline has extra perimeter for its area).
+    n_components: number of separate foreground blobs in the mask (usually 1; >1 flags multi-fragment lesions
+                  or annotation artifacts, reported for context, not used as a shape covariate).
+    """
+    m = (gt > 0.5).astype(np.uint8)
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return None
+    c = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(c)
+    perim = cv2.arcLength(c, True)
+    hull_area = cv2.contourArea(cv2.convexHull(c))
+    if area < 10 or perim <= 0 or hull_area <= 0:
+        return None
+    return dict(solidity=float(area / hull_area), compactness=float(4 * np.pi * area / (perim ** 2)),
+                n_components=len(contours))
 
 
 def descriptors(img_path, gt, size):
@@ -59,7 +85,11 @@ def descriptors(img_path, gt, size):
     dark_frac = float(((gray < 50) & valid).sum() / n_valid)
     sharp = float(cv2.Laplacian(gray, cv2.CV_32F)[valid].var())
 
-    return dict(
+    shape = shape_descriptors(gt)
+    if shape is None:
+        return None
+
+    out = dict(
         log_area=float(np.log(lesion.sum() / valid.sum())),
         lab_contrast=lab_contrast,
         tex_ratio=tex_ratio,
@@ -67,6 +97,8 @@ def descriptors(img_path, gt, size):
         dark_frac=dark_frac,
         log_sharpness=float(np.log(sharp + 1e-6)),
     )
+    out.update(shape)
+    return out
 
 
 def run(args):
@@ -93,6 +125,12 @@ def run(args):
     text_features = torch.stack(torch.chunk(text_features, dim=0, chunks=2), dim=1)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
 
+    conditioner = None
+    if args.ec_z_pix is not None:
+        conditioner = ExtentConditioner(mode=ckpt["extent_cond"]).to(device)
+        conditioner.load_state_dict(ckpt["conditioner"])
+        conditioner.eval()
+
     rows = []
     for items in tqdm(loader):
         img_path = items["img_path"][0]
@@ -105,12 +143,18 @@ def run(args):
             continue
 
         with torch.no_grad():
-            _, patch_features = model.encode_image(items["img"].to(device), args.features_list, DPAM_layer=20)
+            image_features, patch_features = model.encode_image(items["img"].to(device), args.features_list, DPAM_layer=20)
+            tf = text_features
+            if conditioner is not None:
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                z = torch.full((1,), args.ec_z_pix, device=device)
+                _, c_pos, c_neg = conditioner(visual_descriptor(image_features, patch_features), z_override=z)
+                tf = conditioned_text_features(model, prompt_learner, c_pos, c_neg)
             maps = []
             for idx, pf in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     pf = pf / pf.norm(dim=-1, keepdim=True)
-                    sim, _ = AnomalyCLIP_lib.compute_similarity(pf, text_features[0])
+                    sim, _ = AnomalyCLIP_lib.compute_similarity(pf, tf[0])
                     sm = AnomalyCLIP_lib.get_similarity_map(sim[:, 1:, :], args.image_size)
                     maps.append((sm[..., 1] + 1 - sm[..., 0]) / 2.0)
             amap = torch.stack(maps).sum(0)[0].cpu().numpy()
@@ -122,9 +166,12 @@ def run(args):
 
     out_csv = args.out_csv or f"failure_factors_{args.dataset}_{os.path.basename(args.data_path.rstrip('/'))}.csv"
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["image", "auroc"] + FEATURES)
+        w = csv.DictWriter(f, fieldnames=["image", "auroc", "n_components"] + FEATURES)
         w.writeheader()
         w.writerows(rows)
+
+    n_multi = sum(1 for r in rows if r["n_components"] > 1)
+    print(f"multi-fragment masks (n_components>1): {n_multi}/{len(rows)} ({100 * n_multi / len(rows):.1f}%)")
 
     y = np.array([r["auroc"] for r in rows])
     X = np.array([[r[k] for k in FEATURES] for r in rows])
@@ -152,6 +199,25 @@ def run(args):
     for k, b, pv in zip(FEATURES, beta, pval):
         print(f"{k:<15}{b:>+10.3f}{pv:>12.2g}")
 
+    # size-controlled shape check: within each area tercile, compare AUROC of the most irregular (low
+    # solidity) vs most regular (high solidity) lesions -- disentangles shape from the already-established
+    # size effect, without assuming the linear regression's functional form
+    area = X[:, FEATURES.index("log_area")]
+    solidity = X[:, FEATURES.index("solidity")]
+    compactness = X[:, FEATURES.index("compactness")]
+    edges = np.quantile(area, [0, 1 / 3, 2 / 3, 1])
+    print(f"\nShape effect within area tercile (solidity: 1.0=convex/regular margin, lower=lobulated/irregular):")
+    print(f"{'area tercile':<14}{'n':>5}{'low-solidity AUROC':>20}{'high-solidity AUROC':>21}{'delta':>9}{'low-compact AUROC':>19}{'high-compact AUROC':>20}{'delta':>9}")
+    for t in range(3):
+        lo, hi = edges[t], edges[t + 1]
+        sel = (area >= lo) & (area <= hi if t == 2 else area < hi)
+        ys, sol, comp = y[sel], solidity[sel], compactness[sel]
+        s_lo, s_hi = np.quantile(sol, 1 / 3), np.quantile(sol, 2 / 3)
+        c_lo, c_hi = np.quantile(comp, 1 / 3), np.quantile(comp, 2 / 3)
+        a1, a2 = ys[sol <= s_lo].mean(), ys[sol >= s_hi].mean()
+        a3, a4 = ys[comp <= c_lo].mean(), ys[comp >= c_hi].mean()
+        print(f"T{t + 1:<13}{sel.sum():>5}{a1:>20.3f}{a2:>21.3f}{a2 - a1:>+9.3f}{a3:>19.3f}{a4:>20.3f}{a4 - a3:>+9.3f}")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser("AnomalyCLIP failure-factor analysis")
@@ -166,6 +232,8 @@ if __name__ == "__main__":
     ap.add_argument("--t_n_ctx", type=int, default=4)
     ap.add_argument("--feature_map_layer", type=int, nargs="+", default=[0])
     ap.add_argument("--sigma", type=int, default=4)
+    ap.add_argument("--ec_z_pix", type=float, default=None,
+                    help="ECP checkpoint: fixed z for the pixel head (omit for plain checkpoints)")
     args = ap.parse_args()
     print(args)
     run(args)
