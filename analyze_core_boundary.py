@@ -80,7 +80,7 @@ def run(args):
         conditioner.eval()
 
     rows = []
-    cats = ("specular", "dark", "fov_border", "strong_edge")
+    cats = ("specular", "glossy", "corner_text", "dark", "fov_border", "strong_edge")
     hot_cnt = {c: 0 for c in cats}
     far_cnt = {c: 0 for c in cats}
     hot_tot = far_tot = 0
@@ -113,7 +113,9 @@ def run(args):
             amap = torch.stack(maps).sum(0)[0].cpu().numpy()
             amap = gaussian_filter(amap, sigma=args.sigma)
 
-        rgb = np.array(Image.open(img_path).convert("L").resize((args.image_size, args.image_size), Image.BILINEAR))
+        rgb_img = Image.open(img_path).convert("RGB").resize((args.image_size, args.image_size), Image.BILINEAR)
+        rgb = np.array(rgb_img.convert("L"))
+        hsv = np.array(rgb_img.convert("HSV"))
         valid = rgb > 10
         pct = np.zeros_like(amap)
         pct[valid] = stats.rankdata(amap[valid]) / valid.sum()
@@ -142,8 +144,18 @@ def run(args):
         hot = far & (amap > np.median(amap[gt]))
         g = rgb.astype(np.float64)
         grad = np.hypot(sobel(g, 0), sobel(g, 1))
+        h, w = rgb.shape
+        # wet specular sheen: bright AND desaturated (mucus/water reflection loses the tissue's own color),
+        # not just "blown out white" like the old >230 threshold -- catches glossy folds, not only glare spots
+        glossy = (hsv[..., 2].astype(np.int16) > 150) & (hsv[..., 1].astype(np.int16) < 60) & valid
+        # device-burned-in text/timestamp overlay: found only in the top-left corner in every case seen
+        corner_text = np.zeros((h, w), bool)
+        corner_text[: int(0.22 * h), : int(0.30 * w)] = True
+        corner_text &= valid
         masks = {
             "specular": rgb > 230,
+            "glossy": glossy,
+            "corner_text": corner_text,
             "dark": (rgb < 40) & valid,
             "fov_border": distance_transform_edt(np.pad(valid, 1))[1:-1, 1:-1] < 20,
             "strong_edge": grad > np.quantile(grad[valid], 0.9),
