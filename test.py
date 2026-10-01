@@ -18,7 +18,7 @@ from utils import get_transform
 from extent_prompt import ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features
 from sklearn.metrics import roc_auc_score
 from prompt_ensemble import tokenize
-from distractor_stats import LESION, DISTRACT, PRUNED
+from distractor_stats import LESION, DISTRACT, PRUNED, rerank_pool
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -90,9 +90,11 @@ def test(args):
     # Pixel-head distractor suppression (no training): s' = s * (1 - d), d = softmax mass (T=100) on distractor
     # concepts among LESION+DISTRACT raw-CLIP text prompts, evaluated on each patch feature. Image head untouched.
     dist_T = dist_mask = None
-    if args.distractor_suppress != 'none':
+    assert args.distractor_suppress == 'none' or args.distractor_rerank == 'none', 'use one distractor mode at a time'
+    dist_mode = args.distractor_suppress if args.distractor_suppress != 'none' else args.distractor_rerank
+    if dist_mode != 'none':
         names = LESION + DISTRACT
-        dist_names = DISTRACT if args.distractor_suppress == 'all9' else PRUNED
+        dist_names = DISTRACT if dist_mode == 'all9' else PRUNED
         dist_mask = torch.tensor([n in dist_names for n in names], device=device)
         with torch.no_grad():
             tok = tokenize([f"a photo of {n}" for n in names]).to(device)
@@ -150,7 +152,7 @@ def test(args):
             results[cls_name[0]]['pr_sp'].extend(text_probs.detach().cpu())
             if not need_pixel:
                 continue
-            anomaly_map_list = []
+            anomaly_map_list = []; d_list = []
             for idx, patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
@@ -160,7 +162,11 @@ def test(args):
                     if dist_T is not None:
                         pr = (100.0 * patch_feature[:, 1:, :].float() @ dist_T.T).softmax(-1)
                         d = pr[..., dist_mask].sum(-1, keepdim=True)  # [1, N, 1]
-                        anomaly_map = anomaly_map * (1 - AnomalyCLIP_lib.get_similarity_map(d, args.image_size)[..., 0])
+                        d_map = AnomalyCLIP_lib.get_similarity_map(d, args.image_size)[..., 0]
+                        if args.distractor_rerank != 'none':
+                            d_list.append(d_map)   # module C: used after smoothing, per pool component
+                        else:
+                            anomaly_map = anomaly_map * (1 - d_map)
                     # The following code is equivalent. 
                     # anomaly_map = similarity_map[...,1] 
                     anomaly_map_list.append(anomaly_map)
@@ -169,6 +175,9 @@ def test(args):
             
             anomaly_map = anomaly_map.sum(dim = 0)
             anomaly_map = torch.stack([torch.from_numpy(gaussian_filter(i, sigma = args.sigma)) for i in anomaly_map.detach().cpu()], dim = 0 )
+            if args.distractor_rerank != 'none':
+                d_avg = torch.stack(d_list).mean(0).detach().cpu().numpy()
+                anomaly_map = torch.stack([torch.from_numpy(rerank_pool(a_, d_)) for a_, d_ in zip(anomaly_map.numpy(), d_avg)], dim = 0)
             results[cls_name[0]]['anomaly_maps'].append(anomaly_map)
             visualizer(items['img_path'], anomaly_map.detach().cpu().numpy(), args.image_size, args.save_path, cls_name, gt_mask.detach().cpu().numpy())
 
@@ -295,6 +304,8 @@ if __name__ == '__main__':
                         help="fixed z for the pixel (patch) head only; overrides --ec_const_z for that head")
     parser.add_argument("--distractor_suppress", choices=['none', 'all9', 'pruned'], default='none',
                         help="pixel-head test-time suppression by raw-CLIP distractor-concept mass (all9 = pre-registered A, pruned = B, held-out only)")
+    parser.add_argument("--distractor_rerank", choices=['none', 'all9', 'pruned'], default='none',
+                        help="module C: component-gated re-ranking inside the top-10%% pool by distractor mass (pre-registered; all9 only)")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     

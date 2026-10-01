@@ -1,5 +1,6 @@
 """Pure-numpy core statistics for analyze_distractor_semantics.py (unit-testable without torch)."""
 import numpy as np
+from scipy.ndimage import label
 from scipy.stats import rankdata
 
 # Fixed a priori (written before seeing any data); shared by the diagnostic and the test.py suppression flag.
@@ -41,3 +42,18 @@ def concept_probs(patch_feat, text_feat, temp=100.0):
     logits = logits - logits.max(1, keepdims=True)
     p = np.exp(logits)
     return p / p.sum(1, keepdims=True)
+
+
+def rerank_pool(score, d, top_frac=0.10):
+    """Module C: component-gated re-ranking. score, d: [H,W]. Pool = top `top_frac` pixels; 4-connected components of the
+    pool; each component's score is pulled toward the pool floor by its mean distractor mass d_c:
+        s' = floor + (s - floor) * (1 - d_c).   Pixels outside the pool are untouched, and pool pixels stay >= floor,
+    so the pool never drops below the rest of the image (unlike the falsified global s*(1-d)). Parameter-free."""
+    floor = np.quantile(score, 1 - top_frac)
+    pool = score >= floor
+    lab, n = label(pool)
+    out = score.copy()
+    for c in range(1, n + 1):
+        m = lab == c
+        out[m] = floor + (score[m] - floor) * (1 - d[m].mean())
+    return out

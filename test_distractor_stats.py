@@ -21,4 +21,15 @@ assert auroc(np.array([1,0],bool), np.array([.1,.9])) == 0.0
 fp5 = unit(T[4] + 0.3 * rng.normal(size=(200, C))); X5 = np.vstack([fp5, tp])
 P5 = concept_probs(X5, T); pc = [auroc(y, P5[:, k]) for k in range(6)]; print("per-concept AUROC", np.round(pc, 2))
 assert pc[4] > 0.95 and pc[3] < 0.6 and pc[5] < 0.6
+# known answer 6: module C re-ranking
+H = 40; sc = np.random.default_rng(1).random((H, H)) * 0.2; sc[5:10, 5:10] = 0.9; sc[25:30, 25:30] = 0.8   # two blobs
+dd = np.zeros((H, H)); dd[25:30, 25:30] = 0.9                                                       # 2nd blob is a "distractor"
+r = rerank_pool(sc, dd, top_frac=0.05); fl = np.quantile(sc, 0.95)
+assert np.allclose(rerank_pool(sc, np.zeros((H, H)), 0.05), sc)              # d=0 -> identity
+out = np.ones((H, H), bool); out[5:10, 5:10] = out[25:30, 25:30] = False
+assert np.allclose(r[out & (sc < fl)], sc[out & (sc < fl)])                  # outside pool untouched
+assert (r[sc >= fl] >= fl - 1e-9).all()                                       # pool never falls below floor
+assert r[7, 7] == sc[7, 7] and r[27, 27] < sc[27, 27]                         # clean blob kept, distractor blob pulled down
+assert r[7, 7] > r[27, 27]                                                    # ranking flipped relative to the plain 0.9 vs 0.8? (clean stays top)
+print("module C ok", r[7, 7], r[27, 27], fl)
 print("ALL UNIT TESTS PASSED")
