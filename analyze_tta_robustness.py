@@ -130,5 +130,10 @@ if __name__ == "__main__":
     ap.add_argument("--n_ctx", type=int, default=12)
     ap.add_argument("--t_n_ctx", type=int, default=4)
     ap.add_argument("--sigma", type=int, default=4)
+    ap.add_argument("--views", type=str, nargs="+", default=None,
+                    help="subset of VIEWS to use (e.g. 'identity hflip' only -- physically valid for ultrasound,"
+                         " which has a fixed near/far-field depth axis that vflip/rot90/rot270 would break)")
     args = ap.parse_args()
+    if args.views:
+        VIEWS = {k: VIEWS[k] for k in args.views}  # module-level code, so this rebinds the global used by run()
     run(args)
