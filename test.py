@@ -17,6 +17,8 @@ from tabulate import tabulate
 from utils import get_transform
 from extent_prompt import ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features
 from sklearn.metrics import roc_auc_score
+from prompt_ensemble import tokenize
+from distractor_stats import LESION, DISTRACT, PRUNED
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -85,6 +87,19 @@ def test(args):
     text_features_base = text_features_base/text_features_base.norm(dim=-1, keepdim=True)
 
 
+    # Pixel-head distractor suppression (no training): s' = s * (1 - d), d = softmax mass (T=100) on distractor
+    # concepts among LESION+DISTRACT raw-CLIP text prompts, evaluated on each patch feature. Image head untouched.
+    dist_T = dist_mask = None
+    if args.distractor_suppress != 'none':
+        names = LESION + DISTRACT
+        dist_names = DISTRACT if args.distractor_suppress == 'all9' else PRUNED
+        dist_mask = torch.tensor([n in dist_names for n in names], device=device)
+        with torch.no_grad():
+            tok = tokenize([f"a photo of {n}" for n in names]).to(device)
+            # the text transformer takes [x, deep_prompts, counter]; empty deep list = plain frozen CLIP text encoder
+            dist_T = model.encode_text_learn(model.token_embedding(tok).type(model.dtype), tok, []).float()
+            dist_T = dist_T / dist_T.norm(dim=-1, keepdim=True)
+
     bad_case_records = []
     per_image_rows = []
     # image-level metrics only need one score per image; keeping full-res maps/masks for every image
@@ -142,6 +157,10 @@ def test(args):
                     similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
                     similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
                     anomaly_map = (similarity_map[...,1] + 1 - similarity_map[...,0])/2.0
+                    if dist_T is not None:
+                        pr = (100.0 * patch_feature[:, 1:, :].float() @ dist_T.T).softmax(-1)
+                        d = pr[..., dist_mask].sum(-1, keepdim=True)  # [1, N, 1]
+                        anomaly_map = anomaly_map * (1 - AnomalyCLIP_lib.get_similarity_map(d, args.image_size)[..., 0])
                     # The following code is equivalent. 
                     # anomaly_map = similarity_map[...,1] 
                     anomaly_map_list.append(anomaly_map)
@@ -274,6 +293,8 @@ if __name__ == '__main__':
                         help="fixed z for the image-level (CLS) head only; overrides --ec_const_z for that head")
     parser.add_argument("--ec_z_pix", type=float, default=None,
                         help="fixed z for the pixel (patch) head only; overrides --ec_const_z for that head")
+    parser.add_argument("--distractor_suppress", choices=['none', 'all9', 'pruned'], default='none',
+                        help="pixel-head test-time suppression by raw-CLIP distractor-concept mass (all9 = pre-registered A, pruned = B, held-out only)")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     

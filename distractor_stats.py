@@ -2,6 +2,13 @@
 import numpy as np
 from scipy.stats import rankdata
 
+# Fixed a priori (written before seeing any data); shared by the diagnostic and the test.py suppression flag.
+LESION = ["a polyp", "a tumor", "a lesion", "a protruding growth", "a mass", "an ulcer"]
+DISTRACT = ["a mucosal fold", "a blood vessel", "an air bubble", "stool residue", "a surgical instrument",
+            "specular reflection", "normal healthy mucosa", "a dark lumen", "an endoscope border"]
+# variant B: chosen AFTER the 3-CVC per-concept diagnostic -> must only be evaluated on held-out data (EndoTect)
+PRUNED = ["stool residue", "a dark lumen"]
+
 
 def auroc(y, s):
     y = np.asarray(y, bool); n1 = int(y.sum()); n0 = len(y) - n1

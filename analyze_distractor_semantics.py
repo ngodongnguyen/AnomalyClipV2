@@ -15,12 +15,7 @@ from prompt_ensemble import AnomalyCLIP_PromptLearner, tokenize
 from dataset import Dataset
 from utils import get_transform
 from extent_prompt import ExtentConditioner, visual_descriptor, conditioned_text_features
-from distractor_stats import auroc, concept_margin, split_control, concept_probs
-
-LESION = ["a polyp", "a tumor", "a lesion", "a protruding growth", "a mass", "an ulcer"]
-DISTRACT = ["a mucosal fold", "a blood vessel", "an air bubble", "stool residue", "a surgical instrument",
-            "specular reflection", "normal healthy mucosa", "a dark lumen", "an endoscope border"]
-
+from distractor_stats import LESION, DISTRACT, auroc, concept_margin, split_control, concept_probs
 
 def run(a):
     dev = "cuda"
