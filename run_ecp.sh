@@ -67,6 +67,15 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
+  # flip/rotation robustness + test-time-augmentation ensemble check: bash run_ecp.sh diag_tta <ckpt> [z_pix] [limit]
+  diag_tta)
+    A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; L=${4:-150}; CK=./checkpoints/$2/epoch_15.pth
+    for P in "colon $CVC/CVC-ClinicDB" "colon $CVC/Kvasir" "colon $CVC/CVC-ColonDB" "ISBI $A/ISIC" \
+             "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
+      DS=${P%% *}; DP=${P#* }
+      CUDA_VISIBLE_DEVICES=$DEV python analyze_tta_robustness.py --dataset $DS --data_path "$DP" \
+        --checkpoint_path $CK --limit $L $X
+    done ;;
   # lesion shape (solidity/compactness) vs AUROC, controlling for size: bash run_ecp.sh diag_shape <ckpt> [z_pix]
   diag_shape)
     A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; CK=./checkpoints/$2/epoch_15.pth

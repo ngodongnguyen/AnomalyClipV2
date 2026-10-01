@@ -1,5 +1,12 @@
 # AnomalyCLIP — project notes for Claude
 
+## Git: never commit or push without explicit per-instance permission
+
+**Never run `git commit` or `git push` on your own initiative — not even "it's just a diagnostic script",
+not even if the user asked for the same thing last time.** Edit/write the files, tell the user what changed,
+and stop there. Only commit/push when the user explicitly asks for it **in that turn** — a prior approval does
+not carry over to the next change. This was violated repeatedly in earlier sessions; do not repeat it.
+
 Research fork of AnomalyCLIP (ICLR'24 zero-shot anomaly detection), aimed at a Q1/rank-A paper on
 **medical** zero-shot anomaly detection (not industrial — see Scope below). User's own repo:
 `ngodongnguyen/AnomalyClipV2`.
