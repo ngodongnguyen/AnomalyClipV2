@@ -34,7 +34,9 @@ def run(a):
     cond = ExtentConditioner(mode=ck["extent_cond"]).to(dev); cond.load_state_dict(ck["conditioner"]); cond.eval()
     names = LESION + DISTRACT
     with torch.no_grad():
-        T = F.normalize(model.encode_text(tokenize([f"a photo of {n}" for n in names]).to(dev)).float(), dim=-1).cpu().numpy()
+        tok = tokenize([f"a photo of {n}" for n in names]).to(dev)
+        # text transformer here only accepts [x, deep_prompts, counter]; an empty deep list = plain frozen CLIP text encoder
+        T = F.normalize(model.encode_text_learn(model.token_embedding(tok).type(model.dtype), tok, []).float(), dim=-1).cpu().numpy()
     isd = np.array([False] * len(LESION) + [True] * len(DISTRACT)); rng = np.random.default_rng(0)
     Y, M, Mc, lesion_vs_bg = [], [], [], []
     for it in tqdm(loader):
