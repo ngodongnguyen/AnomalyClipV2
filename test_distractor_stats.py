@@ -1,0 +1,20 @@
+import numpy as np, sys
+sys.path.insert(0, "/private/tmp/claude-1089476223/-Users-nguyen-ngo-1-Nguyen-AnomalyCLIP/36719b56-5e03-460d-b9c6-4f4e4d8701ae/scratchpad")
+from distractor_stats import *
+rng = np.random.default_rng(0); C = 32
+def unit(x): return x / np.linalg.norm(x, axis=-1, keepdims=True)
+T = unit(rng.normal(size=(6, C))); isd = np.array([0, 0, 0, 1, 1, 1], bool)   # 3 lesion, 3 distractor concepts
+# known answer 1: FP patches = distractor direction + noise, TP patches = lesion direction + noise -> AUROC ~1
+fp = unit(T[3:].mean(0) + 0.3 * rng.normal(size=(200, C))); tp = unit(T[:3].mean(0) + 0.3 * rng.normal(size=(200, C)))
+X = np.vstack([fp, tp]); y = np.r_[np.ones(200, bool), np.zeros(200, bool)]
+a = auroc(y, concept_margin(X, T, isd)); print("separable case AUROC", a); assert a > 0.95
+# known answer 2: both groups drawn from the same distribution -> AUROC ~0.5
+X2 = unit(rng.normal(size=(2000, C))); y2 = rng.random(2000) < 0.5
+a2 = auroc(y2, concept_margin(X2, T, isd)); print("null case AUROC", a2); assert abs(a2 - 0.5) < 0.05
+# known answer 3: null-control relabel on the separable case should drop toward 0.5 on average
+cs = [auroc(y, concept_margin(X, T, split_control(6, isd, rng))) for _ in range(200)]
+print("control mean AUROC", np.mean(cs)); assert abs(np.mean(cs) - 0.5) < 0.15
+# known answer 4: auroc exact on tiny case
+assert auroc(np.array([1,1,0,0],bool), np.array([.9,.8,.3,.1])) == 1.0
+assert auroc(np.array([1,0],bool), np.array([.1,.9])) == 0.0
+print("ALL UNIT TESTS PASSED")
