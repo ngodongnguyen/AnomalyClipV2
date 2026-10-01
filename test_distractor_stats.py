@@ -1,5 +1,5 @@
 import numpy as np, sys
-sys.path.insert(0, "/private/tmp/claude-1089476223/-Users-nguyen-ngo-1-Nguyen-AnomalyCLIP/36719b56-5e03-460d-b9c6-4f4e4d8701ae/scratchpad")
+import os; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from distractor_stats import *
 rng = np.random.default_rng(0); C = 32
 def unit(x): return x / np.linalg.norm(x, axis=-1, keepdims=True)
@@ -17,4 +17,8 @@ print("control mean AUROC", np.mean(cs)); assert abs(np.mean(cs) - 0.5) < 0.15
 # known answer 4: auroc exact on tiny case
 assert auroc(np.array([1,1,0,0],bool), np.array([.9,.8,.3,.1])) == 1.0
 assert auroc(np.array([1,0],bool), np.array([.1,.9])) == 0.0
+# known answer 5: FP patches point only at distractor #4 -> per-concept AUROC of concept 4 ~1, other distractors < 0.6
+fp5 = unit(T[4] + 0.3 * rng.normal(size=(200, C))); X5 = np.vstack([fp5, tp])
+P5 = concept_probs(X5, T); pc = [auroc(y, P5[:, k]) for k in range(6)]; print("per-concept AUROC", np.round(pc, 2))
+assert pc[4] > 0.95 and pc[3] < 0.6 and pc[5] < 0.6
 print("ALL UNIT TESTS PASSED")

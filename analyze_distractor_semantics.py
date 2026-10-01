@@ -15,7 +15,7 @@ from prompt_ensemble import AnomalyCLIP_PromptLearner, tokenize
 from dataset import Dataset
 from utils import get_transform
 from extent_prompt import ExtentConditioner, visual_descriptor, conditioned_text_features
-from distractor_stats import auroc, concept_margin, split_control
+from distractor_stats import auroc, concept_margin, split_control, concept_probs
 
 LESION = ["a polyp", "a tumor", "a lesion", "a protruding growth", "a mass", "an ulcer"]
 DISTRACT = ["a mucosal fold", "a blood vessel", "an air bubble", "stool residue", "a surgical instrument",
@@ -38,7 +38,7 @@ def run(a):
         # text transformer here only accepts [x, deep_prompts, counter]; an empty deep list = plain frozen CLIP text encoder
         T = F.normalize(model.encode_text_learn(model.token_embedding(tok).type(model.dtype), tok, []).float(), dim=-1).cpu().numpy()
     isd = np.array([False] * len(LESION) + [True] * len(DISTRACT)); rng = np.random.default_rng(0)
-    Y, M, Mc, lesion_vs_bg = [], [], [], []
+    Y, M, Mc, lesion_vs_bg, PC = [], [], [], [], []
     for it in tqdm(loader):
         gt = it["img_mask"][0, 0].numpy() > 0.5
         if gt.sum() < 20 or (~gt).sum() < 20: continue
@@ -60,12 +60,16 @@ def run(a):
         thr = np.quantile(s[valid], 1 - a.top_frac); pool = valid & (s >= thr)
         tp = pool & gf; fp = pool & ~gf & (dout > 2)
         if tp.sum() == 0 or fp.sum() == 0: continue
-        idx = np.where(tp | fp)[0]; Y += list(fp[idx]); M += list(m[idx]); Mc += list(mc[idx])
+        idx = np.where(tp | fp)[0]; Y += list(fp[idx]); M += list(m[idx]); Mc += list(mc[idx]); PC.append(concept_probs(P[idx], T))
     Y = np.array(Y, bool)
     print(f"\n=== {a.dataset} {a.data_path}: pool patches TP={int((~Y).sum())} FP={int(Y.sum())}")
     print(f"precondition  lesion-vs-bg AUROC of -margin (mean per image) = {np.nanmean(lesion_vs_bg):.3f}  (need >= 0.60)")
     print(f"MAIN   AUROC(FP vs TP | margin)       = {auroc(Y, np.array(M)):.3f}")
     print(f"CONTROL AUROC (random concept relabel) = {auroc(Y, np.array(Mc)):.3f}")
+    PC = np.concatenate(PC)   # [n_pool_patches, K] softmax prob per concept
+    print("PER-CONCEPT (descriptive only; NOT used to select concepts). AUROC(FP vs TP | prob_k): >0.5 = concept fires more on FP")
+    for k, n in enumerate(names):
+        print(f"  {'DIST' if isd[k] else 'LES '} {n:24s} AUROC={auroc(Y, PC[:, k]):.3f}  mean_prob FP={PC[Y, k].mean():.3f} TP={PC[~Y, k].mean():.3f}")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()

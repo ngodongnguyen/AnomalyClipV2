@@ -26,3 +26,11 @@ def split_control(K, is_distractor, rng):
     perm = rng.permutation(K)
     out = np.zeros(K, bool); out[perm[: int(is_distractor.sum())]] = True
     return out
+
+
+def concept_probs(patch_feat, text_feat, temp=100.0):
+    """Per-patch softmax over all K concepts -> [N,K] (same softmax as concept_margin)."""
+    logits = temp * patch_feat @ text_feat.T
+    logits = logits - logits.max(1, keepdims=True)
+    p = np.exp(logits)
+    return p / p.sum(1, keepdims=True)
