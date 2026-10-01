@@ -43,9 +43,9 @@ def run(a):
         gt = it["img_mask"][0, 0].numpy() > 0.5
         if gt.sum() < 20 or (~gt).sum() < 20: continue
         with torch.no_grad():
-            imf, pf = model.encode_image(it["img"].to(dev), [24], DPAM_layer=20); pf = pf[-1]
+            imf, pfl = model.encode_image(it["img"].to(dev), [24], DPAM_layer=20); pf = pfl[-1]
             imf = imf / imf.norm(dim=-1, keepdim=True)
-            _, cp, cn = cond(visual_descriptor(imf, pf), z_override=torch.full((1,), a.ec_z_pix, device=dev))
+            _, cp, cn = cond(visual_descriptor(imf, pfl), z_override=torch.full((1,), a.ec_z_pix, device=dev))
             tf = conditioned_text_features(model, pl, cp, cn)
             pfn = F.normalize(pf, dim=-1)
             sim, _ = AnomalyCLIP_lib.compute_similarity(pfn, tf[0])
