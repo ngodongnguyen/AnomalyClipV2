@@ -199,24 +199,33 @@ def run(args):
     for k, b, pv in zip(FEATURES, beta, pval):
         print(f"{k:<15}{b:>+10.3f}{pv:>12.2g}")
 
-    # size-controlled shape check: within each area tercile, compare AUROC of the most irregular (low
-    # solidity) vs most regular (high solidity) lesions -- disentangles shape from the already-established
-    # size effect, without assuming the linear regression's functional form
+    # size-controlled factor check: within each area tercile, compare AUROC of the bottom vs top tercile of
+    # the factor -- disentangles the factor from the already-established size effect, and does not assume the
+    # linear regression's functional form or trust individual coefficients when two factors are collinear
+    # (solidity/compactness flipped sign against each other in some datasets -- a regression-only read would
+    # have been misleading there).
     area = X[:, FEATURES.index("log_area")]
-    solidity = X[:, FEATURES.index("solidity")]
-    compactness = X[:, FEATURES.index("compactness")]
-    edges = np.quantile(area, [0, 1 / 3, 2 / 3, 1])
-    print(f"\nShape effect within area tercile (solidity: 1.0=convex/regular margin, lower=lobulated/irregular):")
-    print(f"{'area tercile':<14}{'n':>5}{'low-solidity AUROC':>20}{'high-solidity AUROC':>21}{'delta':>9}{'low-compact AUROC':>19}{'high-compact AUROC':>20}{'delta':>9}")
-    for t in range(3):
-        lo, hi = edges[t], edges[t + 1]
-        sel = (area >= lo) & (area <= hi if t == 2 else area < hi)
-        ys, sol, comp = y[sel], solidity[sel], compactness[sel]
-        s_lo, s_hi = np.quantile(sol, 1 / 3), np.quantile(sol, 2 / 3)
-        c_lo, c_hi = np.quantile(comp, 1 / 3), np.quantile(comp, 2 / 3)
-        a1, a2 = ys[sol <= s_lo].mean(), ys[sol >= s_hi].mean()
-        a3, a4 = ys[comp <= c_lo].mean(), ys[comp >= c_hi].mean()
-        print(f"T{t + 1:<13}{sel.sum():>5}{a1:>20.3f}{a2:>21.3f}{a2 - a1:>+9.3f}{a3:>19.3f}{a4:>20.3f}{a4 - a3:>+9.3f}")
+
+    def tercile_check(label, factor):
+        edges = np.quantile(area, [0, 1 / 3, 2 / 3, 1])
+        rows_out = []
+        for t in range(3):
+            lo, hi = edges[t], edges[t + 1]
+            sel = (area >= lo) & (area <= hi if t == 2 else area < hi)
+            ys, fv = y[sel], factor[sel]
+            f_lo, f_hi = np.quantile(fv, 1 / 3), np.quantile(fv, 2 / 3)
+            a_lo, a_hi = ys[fv <= f_lo].mean(), ys[fv >= f_hi].mean()
+            rows_out.append((sel.sum(), a_lo, a_hi, a_hi - a_lo))
+        print(f"\n{label} effect within area tercile (bottom-tercile vs top-tercile of the factor):")
+        print(f"{'area tercile':<14}{'n':>5}{'low-factor AUROC':>18}{'high-factor AUROC':>19}{'delta':>9}")
+        for t, (n_t, a_lo, a_hi, d) in enumerate(rows_out, start=1):
+            print(f"T{t:<13}{n_t:>5}{a_lo:>18.3f}{a_hi:>19.3f}{d:>+9.3f}")
+        return [r[3] for r in rows_out]
+
+    tercile_check("solidity (1.0=convex/regular margin, lower=lobulated/irregular)", X[:, FEATURES.index("solidity")])
+    tercile_check("compactness (1.0=circle, lower=elongated/irregular boundary)", X[:, FEATURES.index("compactness")])
+    tercile_check("tex_ratio (higher=lesion rougher than surroundings, lower=lesion blends in texturally)",
+                  X[:, FEATURES.index("tex_ratio")])
 
 
 if __name__ == "__main__":
