@@ -1,0 +1,34 @@
+diff --git a/test.py b/test.py
+index 51c4d3d..8bfa63c 100644
+--- a/test.py
++++ b/test.py
+@@ -433,24 +433,24 @@ def test(args):
+         table_ls.append(['mean', 
+                         str(np.round(np.mean(image_auroc_list) * 100, decimals=1)),
+                         str(np.round(np.mean(image_ap_list) * 100, decimals=1))])
+-        results = tabulate(table_ls, headers=['objects', 'image_auroc', 'image_ap'], tablefmt="pipe")
++        summary_table = tabulate(table_ls, headers=['objects', 'image_auroc', 'image_ap'], tablefmt="pipe")
+     elif args.metrics == 'pixel-auroc':
+         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1))])
+-        results = tabulate(table_ls, headers=['objects', 'pixel_auroc'], tablefmt="pipe")
++        summary_table = tabulate(table_ls, headers=['objects', 'pixel_auroc'], tablefmt="pipe")
+     elif args.metrics == 'pixel-level':
+         # logger
+         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1)),
+                         str(np.round(np.mean(pixel_aupro_list) * 100, decimals=1))
+                        ])
+-        results = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro'], tablefmt="pipe")
++        summary_table = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro'], tablefmt="pipe")
+     elif args.metrics == 'image-pixel-level':
+         # logger
+         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1)),
+                         str(np.round(np.mean(pixel_aupro_list) * 100, decimals=1)), 
+                         str(np.round(np.mean(image_auroc_list) * 100, decimals=1)),
+                         str(np.round(np.mean(image_ap_list) * 100, decimals=1))])
+-        results = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro', 'image_auroc', 'image_ap'], tablefmt="pipe")
+-    logger.info("\n%s", results)
++        summary_table = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro', 'image_auroc', 'image_ap'], tablefmt="pipe")
++    logger.info("\n%s", summary_table)
+     if args.export_image_scores and args.metrics == 'image-level':
+         image_level_metric_values['mean'] = {
+             'image_auroc': float(np.mean(image_auroc_list)),
