@@ -97,6 +97,7 @@ def run(args):
             imf, pf = model.encode_image(img, [24], DPAM_layer=20)
         return imf, pf
 
+    @torch.no_grad()
     def readout(pf, tf, arm):
         kind, p, _ = ARMS[arm]
         feats = pf[-1]  # [1, N, C]
@@ -131,8 +132,9 @@ def run(args):
         imf, pf = encode(img, "base")
         imf = imf / imf.norm(dim=-1, keepdim=True)
         z = torch.full((1,), args.ec_z_pix, device=device)
-        _, c_pos, c_neg = cond(visual_descriptor(imf, pf), z_override=z)
-        tf = conditioned_text_features(model, pl, c_pos, c_neg)
+        with torch.no_grad():
+            _, c_pos, c_neg = cond(visual_descriptor(imf, pf), z_override=z)
+            tf = conditioned_text_features(model, pl, c_pos, c_neg)
         row = {"image": os.path.basename(it["img_path"]), "log_area": float(np.log(gt.mean()))}
         for arm in ARMS:
             pf_a = pf if arm == "base" else encode(img, arm)[1]
