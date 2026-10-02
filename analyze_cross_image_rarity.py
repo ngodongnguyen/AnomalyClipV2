@@ -64,7 +64,7 @@ def run(a):
     allow = torch.tensor(allow_matrix(np.array(G), a.excl_near)).to(dev)
     # keys/queries: valid patches of all kept images
     Kt = torch.cat([Pall[i][torch.tensor(recs[i]["valid"]).to(dev)] for i in range(n)]); kimg = torch.cat([torch.full((int(recs[i]["valid"].sum()),), i) for i in range(n)]).to(dev)
-    c_all = knn_mean_torch(Kt, kimg, Kt, kimg, allow, k=a.k).cpu().numpy()
+    c_all = knn_mean_torch(Kt, kimg, Kt, kimg, allow, k=a.k, chunk=a.chunk).cpu().numpy()  # chunk x N_keys matrix: keep small (OOM at 2048 on ClinicDB)
     gmean = F.normalize(Kt.float().mean(0, keepdim=True), dim=-1); b_all = (Kt.float() @ gmean.T)[:, 0].cpu().numpy()   # trivial baseline
     off = 0; Y, C, B, IM, S_pool = [], [], [], [], []; S_all, C_all, L_all, I_all = [], [], [], []
     for i, r in enumerate(recs):
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     p.add_argument("--data_path", required=True); p.add_argument("--checkpoint_path", required=True); p.add_argument("--dataset", default="colon")
     p.add_argument("--ec_z_pix", type=float, default=1.6); p.add_argument("--top_frac", type=float, default=0.10)
     p.add_argument("--k", type=int, default=5); p.add_argument("--excl_near", type=int, default=10); p.add_argument("--n_img", type=int, default=250)
-    p.add_argument("--lam", type=float, default=0.5)
+    p.add_argument("--lam", type=float, default=0.5); p.add_argument("--chunk", type=int, default=256)
     p.add_argument("--image_size", type=int, default=518); p.add_argument("--depth", type=int, default=9)
     p.add_argument("--n_ctx", type=int, default=12); p.add_argument("--t_n_ctx", type=int, default=4)
     run(p.parse_args())
