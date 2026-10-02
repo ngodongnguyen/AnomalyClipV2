@@ -1,0 +1,15 @@
+diff --git a/scripts/preflight_exp011.sh b/scripts/preflight_exp011.sh
+index d708b95..568cb2f 100644
+--- a/scripts/preflight_exp011.sh
++++ b/scripts/preflight_exp011.sh
+@@ -236,8 +236,8 @@ if 1.6 == 1.60000001 or torch.tensor(1.6, dtype=torch.float32) != torch.tensor(1
+ 
+ def log_metrics(name):
+     lines = (smoke / name / 'log.txt').read_text().splitlines()
+-    match = next((re.match(r'^\|\s*brain\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|', line)
+-                  for line in lines if line.startswith('|')), None)
++    pattern = re.compile(r'\|\s*brain\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|')
++    match = next((found for line in lines if (found := pattern.search(line)) is not None), None)
+     if match is None:
+         raise SystemExit(f'{name}: no brain AUROC/AP row in log')
+     return tuple(float(value) for value in match.groups())
