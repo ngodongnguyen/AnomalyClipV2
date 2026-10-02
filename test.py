@@ -10,8 +10,14 @@ from logger import get_logger
 from tqdm import tqdm
 
 import os
+import csv
+import hashlib
+import json
+import shlex
 import shutil
 import random
+import subprocess
+import sys
 import numpy as np
 from tabulate import tabulate
 from utils import get_transform
@@ -27,6 +33,158 @@ def setup_seed(seed):
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def _git_revision():
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
+    """Export existing scores and metric values without recomputing either."""
+    csv_path = os.path.join(args.save_path, 'image_level_predictions.csv')
+    with open(csv_path, 'w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            'dataset', 'sample_id', 'ground_truth_image_label', 'image_anomaly_score'])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with open(os.path.join(args.save_path, 'image_level_metrics.json'), 'w') as handle:
+        json.dump(metric_values, handle, indent=2, allow_nan=False)
+        handle.write('\n')
+
+    labels = [row['ground_truth_image_label'] for row in rows]
+    meta_path = os.path.join(args.data_path, 'meta.json')
+    code_root = os.path.dirname(os.path.abspath(__file__))
+    source_paths = [
+        'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
+        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py',
+    ]
+    source_paths.extend(sorted(
+        os.path.join('AnomalyCLIP_lib', name)
+        for name in os.listdir(os.path.join(code_root, 'AnomalyCLIP_lib'))
+        if name.endswith('.py')))
+    source_hashes = {
+        path: _sha256_file(os.path.join(code_root, path)) for path in source_paths
+    }
+    vocab_path = os.path.join(code_root, 'AnomalyCLIP_lib', 'bpe_simple_vocab_16e6.txt.gz')
+    source_hashes[os.path.relpath(vocab_path, code_root)] = _sha256_file(vocab_path)
+    # model_load.load uses this cache path for the named weights when download_root is unset.
+    clip_weights_path = os.path.expanduser('~/.cache/clip/ViT-L-14-336px.pt')
+    metadata = {
+        'command': shlex.join([sys.executable, *sys.argv]),
+        'checkpoint_path': os.path.abspath(args.checkpoint_path),
+        'checkpoint_sha256': _sha256_file(args.checkpoint_path),
+        'checkpoint_extent_cond': checkpoint.get('extent_cond'),
+        'code_revision': _git_revision(),
+        'evaluation_source_sha256': source_hashes,
+        'pretrained_clip_model': 'ViT-L/14@336px',
+        'pretrained_clip_weights_path': clip_weights_path if os.path.isfile(clip_weights_path) else None,
+        'pretrained_clip_weights_sha256': (
+            _sha256_file(clip_weights_path) if os.path.isfile(clip_weights_path) else None),
+        'data_path': os.path.abspath(args.data_path),
+        'dataset': os.path.basename(os.path.normpath(args.data_path)),
+        'dataset_mode': args.dataset,
+        'split': 'test',
+        'meta_json_sha256': _sha256_file(meta_path),
+        'z_img': args.ec_z_img,
+        'z_pix': args.ec_z_pix,
+        'sigma': args.sigma,
+        'seed': args.seed,
+        'sample_count': len(rows),
+        'positive_count': sum(label == 1 for label in labels),
+        'negative_count': sum(label == 0 for label in labels),
+        'arguments': vars(args),
+    }
+    with open(os.path.join(args.save_path, 'evaluation_metadata.json'), 'w') as handle:
+        json.dump(metadata, handle, indent=2, allow_nan=False)
+        handle.write('\n')
+
+def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results):
+    """Export the already-computed pixel metrics and per-image mask statistics."""
+    with open(os.path.join(args.save_path, 'pixel_level_metrics.json'), 'w') as handle:
+        json.dump(metric_values, handle, indent=2, allow_nan=False)
+        handle.write('\n')
+
+    dataset_root = os.path.abspath(args.data_path)
+    with open(os.path.join(args.save_path, 'pixel_per_image_predictions.csv'), 'w', newline='') as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            'dataset', 'sample_id', 'mask_area_fraction', 'per_image_pixel_auroc'])
+        writer.writeheader()
+        for image_path, area_frac, auroc, _z_pred, _z_gt in rows:
+            writer.writerow({
+                'dataset': os.path.basename(os.path.normpath(args.data_path)),
+                'sample_id': os.path.relpath(image_path, dataset_root),
+                'mask_area_fraction': area_frac,
+                'per_image_pixel_auroc': auroc,
+            })
+
+    labels = []
+    sample_count = 0
+    pixel_counts = {}
+    for obj, result in results.items():
+        obj_labels = [int(x) for x in result['gt_sp']]
+        labels.extend(obj_labels)
+        sample_count += len(obj_labels)
+        masks = np.asarray(result['imgs_masks'])
+        pixel_counts[obj] = {
+            'foreground_pixels': int(np.count_nonzero(masks > 0.5)),
+            'background_pixels': int(np.count_nonzero(masks <= 0.5)),
+        }
+
+    code_root = os.path.dirname(os.path.abspath(__file__))
+    source_paths = [
+        'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
+        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py',
+    ]
+    source_paths.extend(sorted(
+        os.path.join('AnomalyCLIP_lib', name)
+        for name in os.listdir(os.path.join(code_root, 'AnomalyCLIP_lib'))
+        if name.endswith('.py')))
+    source_hashes = {path: _sha256_file(os.path.join(code_root, path)) for path in source_paths}
+    vocab_path = os.path.join(code_root, 'AnomalyCLIP_lib', 'bpe_simple_vocab_16e6.txt.gz')
+    source_hashes[os.path.relpath(vocab_path, code_root)] = _sha256_file(vocab_path)
+    clip_weights_path = os.path.expanduser('~/.cache/clip/ViT-L-14-336px.pt')
+    metadata = {
+        'command': shlex.join([sys.executable, *sys.argv]),
+        'checkpoint_path': os.path.abspath(args.checkpoint_path),
+        'checkpoint_sha256': _sha256_file(args.checkpoint_path),
+        'checkpoint_extent_cond': checkpoint.get('extent_cond'),
+        'code_revision': _git_revision(),
+        'evaluation_source_sha256': source_hashes,
+        'pretrained_clip_model': 'ViT-L/14@336px',
+        'pretrained_clip_weights_path': clip_weights_path if os.path.isfile(clip_weights_path) else None,
+        'pretrained_clip_weights_sha256': (
+            _sha256_file(clip_weights_path) if os.path.isfile(clip_weights_path) else None),
+        'data_path': dataset_root,
+        'dataset': os.path.basename(os.path.normpath(args.data_path)),
+        'dataset_mode': args.dataset,
+        'split': 'test',
+        'meta_json_sha256': _sha256_file(os.path.join(args.data_path, 'meta.json')),
+        'z_img': args.ec_z_img,
+        'z_pix': args.ec_z_pix,
+        'sigma': args.sigma,
+        'seed': args.seed,
+        'sample_count': sample_count,
+        'positive_count': sum(label == 1 for label in labels),
+        'negative_count': sum(label == 0 for label in labels),
+        'images_with_binary_masks': len(rows),
+        'images_excluded_from_per_image_auc': sample_count - len(rows),
+        'mask_pixel_counts': pixel_counts,
+        'arguments': vars(args),
+    }
+    with open(os.path.join(args.save_path, 'evaluation_metadata.json'), 'w') as handle:
+        json.dump(metadata, handle, indent=2, allow_nan=False)
+        handle.write('\n')
 
 from visualization import visualizer
 
@@ -104,6 +262,9 @@ def test(args):
 
     bad_case_records = []
     per_image_rows = []
+    image_level_rows = []
+    image_level_metric_values = {}
+    pixel_level_metric_values = {}
     # image-level metrics only need one score per image; keeping full-res maps/masks for every image
     # exhausts RAM on large sets (21k COVID images -> ~45 GB, process OOM-killed)
     need_pixel = args.metrics != 'image-level'
@@ -150,6 +311,13 @@ def test(args):
             text_probs = (text_probs/0.07).softmax(-1)
             text_probs = text_probs[:, 0, 1]
             results[cls_name[0]]['pr_sp'].extend(text_probs.detach().cpu())
+            if args.export_image_scores and args.metrics == 'image-level':
+                image_level_rows.append({
+                    'dataset': os.path.basename(os.path.normpath(args.data_path)),
+                    'sample_id': os.path.relpath(items['img_path'][0], args.data_path),
+                    'ground_truth_image_label': int(items['anomaly'][0]),
+                    'image_anomaly_score': float(text_probs.detach().cpu()[0]),
+                })
             if not need_pixel:
                 continue
             anomaly_map_list = []; d_list = []
@@ -223,6 +391,9 @@ def test(args):
         if args.metrics == 'image-level':
             image_auroc = image_level_metrics(results, obj, "image-auroc")
             image_ap = image_level_metrics(results, obj, "image-ap")
+            if args.export_image_scores:
+                image_level_metric_values[obj] = {
+                    'image_auroc': float(image_auroc), 'image_ap': float(image_ap)}
             table.append(str(np.round(image_auroc * 100, decimals=1)))
             table.append(str(np.round(image_ap * 100, decimals=1)))
             image_auroc_list.append(image_auroc)
@@ -235,6 +406,9 @@ def test(args):
         elif args.metrics == 'pixel-level':
             pixel_auroc = pixel_level_metrics(results, obj, "pixel-auroc")
             pixel_aupro = pixel_level_metrics(results, obj, "pixel-aupro")
+            if args.export_pixel_metrics:
+                pixel_level_metric_values[obj] = {
+                    'pixel_auroc': float(pixel_auroc), 'pixel_aupro': float(pixel_aupro)}
             table.append(str(np.round(pixel_auroc * 100, decimals=1)))
             table.append(str(np.round(pixel_aupro * 100, decimals=1)))
             pixel_auroc_list.append(pixel_auroc)
@@ -277,6 +451,19 @@ def test(args):
                         str(np.round(np.mean(image_ap_list) * 100, decimals=1))])
         results = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro', 'image_auroc', 'image_ap'], tablefmt="pipe")
     logger.info("\n%s", results)
+    if args.export_image_scores and args.metrics == 'image-level':
+        image_level_metric_values['mean'] = {
+            'image_auroc': float(np.mean(image_auroc_list)),
+            'image_ap': float(np.mean(image_ap_list)),
+        }
+        _write_image_level_artifacts(args, image_level_rows, image_level_metric_values, checkpoint)
+    if args.export_pixel_metrics and args.metrics == 'pixel-level':
+        pixel_level_metric_values['mean'] = {
+            'pixel_auroc': float(np.mean(pixel_auroc_list)),
+            'pixel_aupro': float(np.mean(pixel_aupro_list)),
+        }
+        _write_pixel_level_artifacts(
+            args, per_image_rows, pixel_level_metric_values, checkpoint, results)
 
 
 if __name__ == '__main__':
@@ -294,6 +481,10 @@ if __name__ == '__main__':
     parser.add_argument("--t_n_ctx", type=int, default=4, help="zero shot")
     parser.add_argument("--feature_map_layer", type=int,  nargs="+", default=[0, 1, 2, 3], help="zero shot")
     parser.add_argument("--metrics", type=str, default='image-pixel-level')
+    parser.add_argument("--export_image_scores", action="store_true",
+                        help="save paired image-level scores, full-precision metrics, and run metadata")
+    parser.add_argument("--export_pixel_metrics", action="store_true",
+                        help="save full-precision pixel metrics, paired per-image mask statistics, and run metadata")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
     parser.add_argument("--sigma", type=int, default=4, help="zero shot")
     parser.add_argument("--ec_const_z", type=float, default=None,
@@ -310,6 +501,8 @@ if __name__ == '__main__':
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     
     args = parser.parse_args()
+    if args.export_pixel_metrics and args.metrics != 'pixel-level':
+        parser.error('--export_pixel_metrics requires --metrics pixel-level')
     print(args)
     setup_seed(args.seed)
     test(args)
