@@ -19,7 +19,7 @@ CHECKPOINT="${CHECKPOINT:-$REPO_ROOT/checkpoints/EXP-012-matched/ecp_extent/chec
 REFERENCE_ROOT="${EXP014_REFERENCE_ROOT:-$REPO_ROOT/results/EXP-012/matched-retry-20261002}"
 INVENTORY="$REPO_ROOT/results/EXP-012/input_inventory.json"
 MANIFEST="$REPO_ROOT/checkpoints/EXP-012-matched/ecp_extent/training_manifest.json"
-SMOKE_ROOT="$REPO_ROOT/results/EXP-014/branch-pilot-smoke"
+SMOKE_ROOT="${EXP014_SMOKE_ROOT:-$REPO_ROOT/results/EXP-014/branch-pilot-smoke}"
 if [[ "$MODE" == --smoke ]]; then
   OUT_ROOT="${EXP014_OUT_ROOT:-$SMOKE_ROOT}"
 else

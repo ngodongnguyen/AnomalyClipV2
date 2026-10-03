@@ -17,6 +17,12 @@ import shlex
 import subprocess
 import sys
 
+# Running a file from scripts/ puts that directory, not the repository root, on
+# sys.path. The project modules live at the root beside scripts/.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 def sha256(path):
     digest = hashlib.sha256()
