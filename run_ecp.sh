@@ -16,7 +16,7 @@ COMMON="--features_list 24 --image_size 518 --depth 9 --n_ctx 12 --t_n_ctx 4"
 train () {  # $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed (default 111)
   CUDA_VISIBLE_DEVICES=$DEV python train.py --dataset mvtec --train_data_path $MVTEC \
     --save_path ./checkpoints/$1/ $COMMON --batch_size 8 --print_freq 1 \
-    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2
+    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2 ${PAA:-}
 }
 
 train_visa () {  # VisA as the auxiliary source (protocol of CoPS/MRAD/MoECLIP/VisualAD). $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed
@@ -157,11 +157,14 @@ case "$1" in
   train_visa_ctrl) ZOOM=0;   train_visa ctrl_visa${2:+_s$2} none 15 $2 ;;
   train_visa_zoom) ZOOM=0.5; train_visa zoom_visa${2:+_s$2} none 15 $2 ;;
   train_visa_ecp)  ZOOM=0.5; train_visa ecp_visa${2:+_s$2} extent 15 $2 ;;
+  # EXP-021: ECP trained with Patch Average Aggregation (scales 1 3 5), same seed/zoom/epochs as ecp_extent. ~100 min.
+  smoke_paa)  ZOOM=0.5; PAA="--paa_scales 1 3 5"; train ecp_paa_smoke extent 1 ;;
+  train_paa)  ZOOM=0.5; PAA="--paa_scales 1 3 5"; train ecp_paa extent 15 ;;
   # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
   #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
   fixed_ckpt)
-    ZI=${3:--0.69}; ZP=${4:-1.6}; A=/home/ai3/NguyenND/AnomalyClipV2/data; F="--ec_z_img $ZI --ec_z_pix $ZP"
-    CKP=./checkpoints/$2/epoch_15.pth; OUT=./results/${2}_fixed
+    ZI=${3:--0.69}; ZP=${4:-1.6}; A=/home/ai3/NguyenND/AnomalyClipV2/data; F="--ec_z_img $ZI --ec_z_pix $ZP ${5:-}"
+    CKP=./checkpoints/$2/epoch_15.pth; OUT=./results/${2}${6:-}_fixed
     for D in CVC-ClinicDB Kvasir CVC-ColonDB; do
       CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $CVC/$D --save_path $OUT/$D \
         --checkpoint_path $CKP $COMMON --metrics pixel-level $F
@@ -181,5 +184,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac

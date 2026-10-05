@@ -25,6 +25,7 @@ from extent_prompt import ExtentConditioner, area_to_z, visual_descriptor, condi
 from sklearn.metrics import roc_auc_score
 from prompt_ensemble import tokenize
 from distractor_stats import LESION, DISTRACT, PRUNED, rerank_pool
+from paa import paa_torch
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -249,6 +250,9 @@ def test(args):
     # concepts among LESION+DISTRACT raw-CLIP text prompts, evaluated on each patch feature. Image head untouched.
     dist_T = dist_mask = None
     assert args.distractor_suppress == 'none' or args.distractor_rerank == 'none', 'use one distractor mode at a time'
+    assert not (args.paa_scales and (args.distractor_suppress != 'none' or args.distractor_rerank != 'none')), 'PAA is not combined with the distractor branches'
+    if not args.paa_scales and checkpoint.get("paa_scales"):
+        logger.info("WARNING: checkpoint was trained with --paa_scales %s but test runs without PAA (pass --paa_scales to match)" % checkpoint["paa_scales"])
     dist_mode = args.distractor_suppress if args.distractor_suppress != 'none' else args.distractor_rerank
     if dist_mode != 'none':
         names = LESION + DISTRACT
@@ -321,12 +325,17 @@ def test(args):
             if not need_pixel:
                 continue
             anomaly_map_list = []; d_list = []
-            for idx, patch_feature in enumerate(patch_features):
+            for idx, raw_patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
-                    patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
-                    similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
-                    similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
-                    anomaly_map = (similarity_map[...,1] + 1 - similarity_map[...,0])/2.0
+                    # --paa_scales (default empty = original behaviour): mean over the per-scale anomaly maps of this layer
+                    scale_maps = []
+                    for paa_s in (args.paa_scales if args.paa_scales else [None]):
+                        patch_feature = raw_patch_feature if paa_s is None else paa_torch(raw_patch_feature, paa_s)
+                        patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
+                        similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
+                        similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
+                        scale_maps.append((similarity_map[...,1] + 1 - similarity_map[...,0])/2.0)
+                    anomaly_map = scale_maps[0] if len(scale_maps) == 1 else torch.stack(scale_maps).mean(0)
                     if dist_T is not None:
                         pr = (100.0 * patch_feature[:, 1:, :].float() @ dist_T.T).softmax(-1)
                         d = pr[..., dist_mask].sum(-1, keepdim=True)  # [1, N, 1]
@@ -433,24 +442,24 @@ def test(args):
         table_ls.append(['mean', 
                         str(np.round(np.mean(image_auroc_list) * 100, decimals=1)),
                         str(np.round(np.mean(image_ap_list) * 100, decimals=1))])
-        results = tabulate(table_ls, headers=['objects', 'image_auroc', 'image_ap'], tablefmt="pipe")
+        summary_table = tabulate(table_ls, headers=['objects', 'image_auroc', 'image_ap'], tablefmt="pipe")
     elif args.metrics == 'pixel-auroc':
         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1))])
-        results = tabulate(table_ls, headers=['objects', 'pixel_auroc'], tablefmt="pipe")
+        summary_table = tabulate(table_ls, headers=['objects', 'pixel_auroc'], tablefmt="pipe")
     elif args.metrics == 'pixel-level':
         # logger
         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1)),
                         str(np.round(np.mean(pixel_aupro_list) * 100, decimals=1))
                        ])
-        results = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro'], tablefmt="pipe")
+        summary_table = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro'], tablefmt="pipe")
     elif args.metrics == 'image-pixel-level':
         # logger
         table_ls.append(['mean', str(np.round(np.mean(pixel_auroc_list) * 100, decimals=1)),
                         str(np.round(np.mean(pixel_aupro_list) * 100, decimals=1)), 
                         str(np.round(np.mean(image_auroc_list) * 100, decimals=1)),
                         str(np.round(np.mean(image_ap_list) * 100, decimals=1))])
-        results = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro', 'image_auroc', 'image_ap'], tablefmt="pipe")
-    logger.info("\n%s", results)
+        summary_table = tabulate(table_ls, headers=['objects', 'pixel_auroc', 'pixel_aupro', 'image_auroc', 'image_ap'], tablefmt="pipe")
+    logger.info("\n%s", summary_table)
     if args.export_image_scores and args.metrics == 'image-level':
         image_level_metric_values['mean'] = {
             'image_auroc': float(np.mean(image_auroc_list)),
@@ -493,6 +502,7 @@ if __name__ == '__main__':
                         help="fixed z for the image-level (CLS) head only; overrides --ec_const_z for that head")
     parser.add_argument("--ec_z_pix", type=float, default=None,
                         help="fixed z for the pixel (patch) head only; overrides --ec_const_z for that head")
+    parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
     parser.add_argument("--distractor_suppress", choices=['none', 'all9', 'pruned'], default='none',
                         help="pixel-head test-time suppression by raw-CLIP distractor-concept mass (all9 = pre-registered A, pruned = B, held-out only)")
     parser.add_argument("--distractor_rerank", choices=['none', 'all9', 'pruned'], default='none',

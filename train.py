@@ -14,6 +14,7 @@ import random
 from utils import get_transform
 from extent_prompt import (ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features,
                            batched_similarity)
+from paa import paa_torch
 
 
 def roi_resample(feat_map, boxes_norm, out_size):
@@ -176,15 +177,19 @@ def train(args):
             #########################################################################
             similarity_map_list = []
             # similarity_map_list.append(similarity_map)
-            for idx, patch_feature in enumerate(patch_features):
+            # --paa_scales (default empty = original behaviour): one extra similarity map per aggregation scale, each
+            # supervised like the original map (MoECLIP-style Patch Average Aggregation, parameter-free)
+            for idx, raw_patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
-                    patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
-                    if conditioner is None:
-                        similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
-                    else:
-                        similarity = batched_similarity(patch_feature, text_features)
-                    similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
-                    similarity_map_list.append(similarity_map)
+                    for paa_s in (args.paa_scales if args.paa_scales else [None]):
+                        patch_feature = raw_patch_feature if paa_s is None else paa_torch(raw_patch_feature, paa_s)
+                        patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
+                        if conditioner is None:
+                            similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
+                        else:
+                            similarity = batched_similarity(patch_feature, text_features)
+                        similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
+                        similarity_map_list.append(similarity_map)
 
             loss = 0
             for i in range(len(similarity_map_list)):
@@ -192,6 +197,8 @@ def train(args):
                 loss += loss_dice(similarity_map_list[i][:, 1, :, :], gt)
                 loss += loss_dice(similarity_map_list[i][:, 0, :, :], 1-gt)
 
+            if args.paa_scales:
+                loss = loss / len(args.paa_scales)   # keep the pixel-vs-image loss ratio of the single-map baseline
             loss = lam * loss
 
             consistency_loss = torch.tensor(0.0, device=device)
@@ -227,6 +234,8 @@ def train(args):
         if (epoch + 1) % args.save_freq == 0:
             ckp_path = os.path.join(args.save_path, 'epoch_' + str(epoch + 1) + '.pth')
             ckpt = {"prompt_learner": prompt_learner.state_dict()}
+            if args.paa_scales:
+                ckpt["paa_scales"] = list(args.paa_scales)
             if conditioner is not None:
                 ckpt["conditioner"] = conditioner.state_dict()
                 ckpt["extent_cond"] = args.extent_cond
@@ -253,6 +262,7 @@ if __name__ == '__main__':
     parser.add_argument("--print_freq", type=int, default=1, help="print frequency")
     parser.add_argument("--save_freq", type=int, default=1, help="save frequency")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
+    parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
     parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
     parser.add_argument("--consistency_weight", type=float, default=0.0,
                          help="weight of the scale-consistency loss (0 = off, original behaviour)")
