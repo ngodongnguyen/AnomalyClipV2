@@ -10,10 +10,17 @@ DEV=0
 ZOOM=0.5
 MVTEC=/home/ai3/NguyenND/AnomalyClipV2/data/mvtec
 CVC=/home/ai3/NguyenND/AnomalyClipV2/data/CVC
+VISA=/home/ai3/NguyenND/AnomalyClipV2/data/visa
 COMMON="--features_list 24 --image_size 518 --depth 9 --n_ctx 12 --t_n_ctx 4"
 
 train () {  # $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed (default 111)
   CUDA_VISIBLE_DEVICES=$DEV python train.py --dataset mvtec --train_data_path $MVTEC \
+    --save_path ./checkpoints/$1/ $COMMON --batch_size 8 --print_freq 1 \
+    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2
+}
+
+train_visa () {  # VisA as the auxiliary source (protocol of CoPS/MRAD/MoECLIP/VisualAD). $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed
+  CUDA_VISIBLE_DEVICES=$DEV python train.py --dataset visa --train_data_path $VISA \
     --save_path ./checkpoints/$1/ $COMMON --batch_size 8 --print_freq 1 \
     --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2
 }
@@ -144,5 +151,35 @@ case "$1" in
     python calibrate_z_domain.py --dataset brain --data_path $A/HeadCT_anomaly_detection --checkpoint_path $CK
     python calibrate_z_domain.py --dataset brain --data_path $A/BrainMRI --checkpoint_path $CK
     python calibrate_z_domain.py --dataset brain --data_path $A/br35 --checkpoint_path $CK ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|test_cls CKPT [FLAGS]|calibrate}" ;;
+  # EXP-020: VisA-trained controls and ECP (same seed/epochs/COMMON as the MVTec runs). One at a time, ~100 min each.
+  #   bash run_ecp.sh train_visa_ctrl | train_visa_zoom | train_visa_ecp   [seed -> checkpoints/<name>_s<seed>]
+  smoke_visa)      ZOOM=0.5; train_visa ecp_visa_smoke extent 1 ;;   # 1-epoch check that VisA training/zoom-aug/extent head run
+  train_visa_ctrl) ZOOM=0;   train_visa ctrl_visa${2:+_s$2} none 15 $2 ;;
+  train_visa_zoom) ZOOM=0.5; train_visa zoom_visa${2:+_s$2} none 15 $2 ;;
+  train_visa_ecp)  ZOOM=0.5; train_visa ecp_visa${2:+_s$2} extent 15 $2 ;;
+  # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
+  #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
+  fixed_ckpt)
+    ZI=${3:--0.69}; ZP=${4:-1.6}; A=/home/ai3/NguyenND/AnomalyClipV2/data; F="--ec_z_img $ZI --ec_z_pix $ZP"
+    CKP=./checkpoints/$2/epoch_15.pth; OUT=./results/${2}_fixed
+    for D in CVC-ClinicDB Kvasir CVC-ColonDB; do
+      CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $CVC/$D --save_path $OUT/$D \
+        --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    done
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset ISBI --data_path $A/ISIC --save_path $OUT/isic \
+      --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset colon --data_path $A/EndoTect_2020_Segmentation_Test_Dataset \
+      --save_path $OUT/endo --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" \
+      --save_path $OUT/tn3k --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    for DIR in HeadCT_anomaly_detection BrainMRI br35; do
+      CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset brain --data_path $A/$DIR --save_path $OUT/$DIR \
+        --checkpoint_path $CKP $COMMON --metrics image-level $F
+    done ;;
+  # MVTec-AD with a VisA-trained checkpoint (standard AnomalyCLIP protocol for MVTec): bash run_ecp.sh test_mvtec_visa <ckpt> [flags]
+  test_mvtec_visa)
+    CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
+      --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
+      $COMMON --metrics image-pixel-level ${3:-} ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac
