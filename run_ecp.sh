@@ -175,7 +175,9 @@ case "$1" in
       --save_path $OUT/endo --checkpoint_path $CKP $COMMON --metrics pixel-level $F
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" \
       --save_path $OUT/tn3k --checkpoint_path $CKP $COMMON --metrics pixel-level $F
+    # set SKIP_IMG=1 to skip the three image-level sets (e.g. PAA, which only changes the pixel head): saves ~25 min per run
     for DIR in HeadCT_anomaly_detection BrainMRI br35; do
+      [ -n "${SKIP_IMG:-}" ] && continue
       CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset brain --data_path $A/$DIR --save_path $OUT/$DIR \
         --checkpoint_path $CKP $COMMON --metrics image-level $F
     done ;;
