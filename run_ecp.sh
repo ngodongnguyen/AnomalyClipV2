@@ -160,6 +160,9 @@ case "$1" in
   # EXP-021: ECP trained with Patch Average Aggregation (scales 1 3 5), same seed/zoom/epochs as ecp_extent. ~100 min.
   smoke_paa)  ZOOM=0.5; PAA="--paa_scales 1 3 5"; train ecp_paa_smoke extent 1 ;;
   train_paa)  ZOOM=0.5; PAA="--paa_scales 1 3 5"; train ecp_paa extent 15 ;;
+  # EXP-022: control "learned constant prompt shift per head" (no extent axis), same recipe/seed/zoom as the matched ECP. ~100 min.
+  smoke_dual) ZOOM=0.5; train ecp_dual_smoke dual 1 ;;
+  train_dual) ZOOM=0.5; train ecp_dual dual 15 ;;
   # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
   #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
   fixed_ckpt)
@@ -186,5 +189,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac

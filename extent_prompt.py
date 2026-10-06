@@ -9,6 +9,8 @@ the learnable context tokens of the normal / abnormal prompts by a vector genera
 Modes (the last two are controls for the ablation "is it the extent signal that matters?"):
   extent : extent estimator -> log-area z -> prompt shift          (the method)
   global : prompt shift generated directly from the visual feature (Crane-style image conditioning, no extent supervision)
+  dual   : control for "is the extent axis needed?": two LEARNED CONSTANT prompt shifts, one for the image head and one for
+           the pixel head, trained on their own head's loss; no estimator, no z axis, no extent supervision (EXP-022)
 """
 import math
 import torch
@@ -54,8 +56,12 @@ def fourier(z, n_freq=4):
 class ExtentConditioner(nn.Module):
     def __init__(self, mode="extent", in_dim=768 + N_BINS, ctx_dim=768, hidden=256, n_freq=4):
         super().__init__()
-        assert mode in ("extent", "global")
+        assert mode in ("extent", "global", "dual")
         self.mode, self.n_freq, self.ctx_dim = mode, n_freq, ctx_dim
+        if mode == "dual":
+            # row 0 = image-head shift, row 1 = pixel-head shift; each row = [normal ctx shift | anomaly ctx shift]; zero init (= base prompt)
+            self.shift = nn.Parameter(torch.zeros(2, 2 * ctx_dim))
+            return
         if mode == "extent":
             self.estimator = nn.Sequential(nn.Linear(in_dim, hidden), nn.GELU(), nn.Linear(hidden, 1))
             cond_in = 1 + 2 * n_freq
@@ -65,8 +71,16 @@ class ExtentConditioner(nn.Module):
         nn.init.zeros_(self.cond[-1].weight)
         nn.init.zeros_(self.cond[-1].bias)
 
+    def dual_shift(self, head, batch):
+        """mode 'dual' only: constant (normal, anomaly) shifts [B, ctx_dim] for head 'img' or 'pix'."""
+        assert self.mode == "dual" and head in ("img", "pix")
+        c = self.shift[0 if head == "img" else 1]
+        c_pos, c_neg = c.chunk(2, dim=-1)
+        return c_pos.unsqueeze(0).expand(batch, -1), c_neg.unsqueeze(0).expand(batch, -1)
+
     def forward(self, desc, z_override=None):
         """desc: [B, in_dim]. Returns (z_pred [B] or None, shift_normal [B, ctx_dim], shift_anomaly [B, ctx_dim])."""
+        assert self.mode != "dual", "mode 'dual' has no per-image forward; use dual_shift(head, batch)"
         if self.mode == "extent":
             z_pred = self.estimator(desc).squeeze(-1)
             z = z_pred if z_override is None else z_override

@@ -293,7 +293,11 @@ def test(args):
             # to both heads; with neither, both heads use the extent estimator.
             text_features_img = text_features_pix = text_features_base
             z_pred_val = z_gt_val = float('nan')
-            if conditioner is not None:
+            if conditioner is not None and conditioner.mode == "dual":
+                # control (EXP-022): constant head-specific shifts, the z flags are ignored
+                text_features_img = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("img", image_features.shape[0]))
+                text_features_pix = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("pix", image_features.shape[0]))
+            elif conditioner is not None:
                 desc = visual_descriptor(image_features, patch_features)
                 z_gt = area_to_z(gt_mask.reshape(1, -1).mean(1).to(device))
                 z_gt_val = float(z_gt[0])

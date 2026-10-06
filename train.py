@@ -156,6 +156,13 @@ def train(args):
                 # Apply DPAM surgery
                 text_probs = image_features.unsqueeze(1) @ text_features.permute(0, 2, 1)
                 text_probs = text_probs[:, 0, ...]/0.07
+            elif conditioner.mode == "dual":
+                # control (EXP-022): head-specific learned constant shifts; image loss uses the image-head prompts, the
+                # pixel losses below use the pixel-head prompts (text_features)
+                n_b = image.shape[0]
+                text_features_img = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("img", n_b))
+                text_features = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("pix", n_b))
+                text_probs = torch.einsum("bc,btc->bt", image_features, text_features_img) / 0.07
             else:
                 lab = label.long().to(device)
                 area = gt.reshape(image.shape[0], -1).mean(1)
@@ -275,7 +282,7 @@ if __name__ == '__main__':
     parser.add_argument("--consistency_scale_a_max", type=float, default=0.15)
     parser.add_argument("--consistency_scale_b_min", type=float, default=0.25)
     parser.add_argument("--consistency_scale_b_max", type=float, default=0.45)
-    parser.add_argument("--extent_cond", type=str, default="none", choices=["none", "extent", "global"],
+    parser.add_argument("--extent_cond", type=str, default="none", choices=["none", "extent", "global", "dual"],
                          help="none = original prompts; extent = extent-conditioned prompts; global = image-conditioned control")
     parser.add_argument("--ec_weight", type=float, default=1.0, help="weight of the extent-estimation loss")
     parser.add_argument("--ec_teacher_p", type=float, default=0.5,
