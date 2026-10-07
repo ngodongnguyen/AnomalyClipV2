@@ -12,7 +12,7 @@ import numpy as np
 import os
 import random
 from utils import get_transform
-from extent_prompt import (ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features,
+from extent_prompt import (ExtentConditioner, TokenAdapter, area_to_z, visual_descriptor, conditioned_text_features,
                            batched_similarity)
 from paa import paa_torch
 
@@ -109,7 +109,12 @@ def train(args):
     if args.extent_cond != "none":
         assert args.consistency_weight == 0, "extent conditioning is not combined with the consistency loss"
         conditioner = ExtentConditioner(mode=args.extent_cond).to(device)
-    params = list(prompt_learner.parameters()) + (list(conditioner.parameters()) if conditioner is not None else [])
+    adapter = None
+    if args.token_adapter != "none":
+        assert args.extent_cond == "extent", "the token adapter is only defined on top of the extent-conditioned model"
+        adapter = TokenAdapter(rank=args.adapter_rank, z_cond=(args.token_adapter == "z")).to(device)
+    params = list(prompt_learner.parameters()) + (list(conditioner.parameters()) if conditioner is not None else []) \
+        + (list(adapter.parameters()) if adapter is not None else [])
     optimizer = torch.optim.Adam(params, lr=args.learning_rate, betas=(0.5, 0.999))
 
     # losses
@@ -125,6 +130,8 @@ def train(args):
         prompt_learner.train()
         if conditioner is not None:
             conditioner.train()
+        if adapter is not None:
+            adapter.train()
         loss_list = []
         image_loss_list = []
         consistency_loss_list = []
@@ -148,6 +155,7 @@ def train(args):
                     
            ####################################
             extent_loss = torch.tensor(0.0, device=device)
+            z_used = None   # the z the prompts were conditioned on (also fed to the token adapter)
             if conditioner is None:
                 prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
                 text_features = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
@@ -174,6 +182,7 @@ def train(args):
                     z_pred_free = conditioner.estimator(desc).squeeze(-1)
                     z_teacher = torch.where(use_gt, z_gt, z_pred_free.detach())
                 z_pred, c_pos, c_neg = conditioner(desc, z_override=z_teacher)
+                z_used = z_teacher if z_teacher is not None else z_pred
                 if z_pred is not None and (lab == 1).any():
                     extent_loss = F.smooth_l1_loss(z_pred[lab == 1], z_gt[lab == 1])
                     extent_err_list.append((z_pred[lab == 1] - z_gt[lab == 1]).abs().mean().item())
@@ -190,6 +199,8 @@ def train(args):
                 if idx >= args.feature_map_layer[0]:
                     for paa_s in (args.paa_scales if args.paa_scales else [None]):
                         patch_feature = raw_patch_feature if paa_s is None else paa_torch(raw_patch_feature, paa_s)
+                        if adapter is not None:
+                            patch_feature = adapter(patch_feature, z_used)
                         patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
                         if conditioner is None:
                             similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features[0])
@@ -243,6 +254,9 @@ def train(args):
             ckpt = {"prompt_learner": prompt_learner.state_dict()}
             if args.paa_scales:
                 ckpt["paa_scales"] = list(args.paa_scales)
+            if adapter is not None:
+                ckpt["token_adapter"] = adapter.state_dict()
+                ckpt["token_adapter_cfg"] = {"rank": args.adapter_rank, "z_cond": args.token_adapter == "z"}
             if conditioner is not None:
                 ckpt["conditioner"] = conditioner.state_dict()
                 ckpt["extent_cond"] = args.extent_cond
@@ -269,6 +283,9 @@ if __name__ == '__main__':
     parser.add_argument("--print_freq", type=int, default=1, help="print frequency")
     parser.add_argument("--save_freq", type=int, default=1, help="save frequency")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
+    parser.add_argument("--token_adapter", choices=["none", "const", "z"], default="none",
+                        help="post-encoder bottleneck adapter on the patch tokens: z = conditioned on the extent z, const = capacity-matched control ignoring z, none = original behaviour")
+    parser.add_argument("--adapter_rank", type=int, default=32)
     parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
     parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
     parser.add_argument("--consistency_weight", type=float, default=0.0,

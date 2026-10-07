@@ -117,3 +117,34 @@ def batched_similarity(patch_feature, text_features):
     """Same as AnomalyCLIP_lib.compute_similarity but with a different text feature pair per image."""
     sim = torch.einsum("bnc,btc->bnt", patch_feature, text_features) / 0.07
     return sim.softmax(-1)
+
+
+class TokenAdapter(nn.Module):
+    """
+    Post-encoder visual adapter (EXP-023). Bottleneck residual MLP on the projected patch tokens (CLS untouched) just
+    before the patch-text similarity; the encoder stays frozen and runs under no_grad. Output layer is zero-initialised,
+    so at initialisation it is the identity. z_cond=True adds a bias generated from the extent z (Fourier features, as in
+    ECP) to the bottleneck pre-activation; z_cond=False is the capacity-matched control that ignores z.
+    A pure channel scale/shift before a cosine read-out is nearly redundant with shifting the text prompt, so the
+    bottleneck is non-linear on purpose.
+    """
+    def __init__(self, dim=768, rank=32, z_cond=True, n_freq=4):
+        super().__init__()
+        self.z_cond, self.n_freq = z_cond, n_freq
+        self.norm = nn.LayerNorm(dim, elementwise_affine=False)
+        self.down = nn.Linear(dim, rank, bias=False)
+        self.up = nn.Linear(rank, dim, bias=False)
+        nn.init.zeros_(self.up.weight)
+        if z_cond:
+            self.zproj = nn.Linear(1 + 2 * n_freq, rank, bias=False)
+
+    def forward(self, tokens, z=None):
+        """tokens [B, N+1, C] (CLS first), z [B] or None (required when z_cond). Returns float32 [B, N+1, C]."""
+        t = tokens.float()
+        patches = t[:, 1:]
+        h = self.down(self.norm(patches))
+        if self.z_cond:
+            assert z is not None, "z-conditioned adapter needs z"
+            h = h + self.zproj(fourier(z.float(), self.n_freq)).unsqueeze(1)
+        return torch.cat([t[:, :1], patches + self.up(F.gelu(h))], dim=1)
+

@@ -16,7 +16,7 @@ COMMON="--features_list 24 --image_size 518 --depth 9 --n_ctx 12 --t_n_ctx 4"
 train () {  # $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed (default 111)
   CUDA_VISIBLE_DEVICES=$DEV python train.py --dataset mvtec --train_data_path $MVTEC \
     --save_path ./checkpoints/$1/ $COMMON --batch_size 8 --print_freq 1 \
-    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2 ${PAA:-}
+    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2 ${PAA:-} ${TRAIN_EXTRA:-}
 }
 
 train_visa () {  # VisA as the auxiliary source (protocol of CoPS/MRAD/MoECLIP/VisualAD). $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed
@@ -163,6 +163,10 @@ case "$1" in
   # EXP-022: control "learned constant prompt shift per head" (no extent axis), same recipe/seed/zoom as the matched ECP. ~100 min.
   smoke_dual) ZOOM=0.5; train ecp_dual_smoke dual 1 ;;
   train_dual) ZOOM=0.5; train ecp_dual dual 15 ;;
+  # EXP-023: post-encoder token adapter on top of the matched ECP recipe (z = conditioned on extent z, const = z-free control). ~100 min each.
+  smoke_va)       ZOOM=0.5; TRAIN_EXTRA="--token_adapter z"; train ecp_va_smoke extent 1 ;;
+  train_va_z)     ZOOM=0.5; TRAIN_EXTRA="--token_adapter z"; train ecp_va_z extent 15 ;;
+  train_va_const) ZOOM=0.5; TRAIN_EXTRA="--token_adapter const"; train ecp_va_const extent 15 ;;
   # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
   #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
   fixed_ckpt)
@@ -189,5 +193,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_va|train_va_z|train_va_const|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac

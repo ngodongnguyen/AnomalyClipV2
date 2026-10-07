@@ -21,7 +21,7 @@ import sys
 import numpy as np
 from tabulate import tabulate
 from utils import get_transform
-from extent_prompt import ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features
+from extent_prompt import ExtentConditioner, TokenAdapter, area_to_z, visual_descriptor, conditioned_text_features
 from sklearn.metrics import roc_auc_score
 from prompt_ensemble import tokenize
 from distractor_stats import LESION, DISTRACT, PRUNED, rerank_pool
@@ -240,6 +240,12 @@ def test(args):
         conditioner.load_state_dict(checkpoint["conditioner"])
         conditioner.eval()
 
+    adapter = None
+    if checkpoint.get("token_adapter") is not None:
+        adapter = TokenAdapter(**checkpoint["token_adapter_cfg"]).to(device)
+        adapter.load_state_dict(checkpoint["token_adapter"])
+        adapter.eval()
+
     prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
     text_features_base = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
     text_features_base = torch.stack(torch.chunk(text_features_base, dim = 0, chunks = 2), dim = 1)
@@ -293,6 +299,7 @@ def test(args):
             # to both heads; with neither, both heads use the extent estimator.
             text_features_img = text_features_pix = text_features_base
             z_pred_val = z_gt_val = float('nan')
+            z_adapt = None   # z fed to the optional token adapter (pixel head only)
             if conditioner is not None and conditioner.mode == "dual":
                 # control (EXP-022): constant head-specific shifts, the z flags are ignored
                 text_features_img = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("img", image_features.shape[0]))
@@ -311,6 +318,7 @@ def test(args):
                 z_img = args.ec_z_img if args.ec_z_img is not None else shared
                 z_pix = args.ec_z_pix if args.ec_z_pix is not None else shared
                 z_pred, text_features_pix = text_at(z_pix)
+                z_adapt = z_gt if z_pix == 'oracle' else (torch.full_like(z_gt, z_pix) if z_pix is not None else z_pred)
                 text_features_img = text_features_pix if z_img == z_pix else text_at(z_img)[1]
                 if z_pred is not None:
                     z_pred_val = float(z_pred[0])
@@ -335,6 +343,8 @@ def test(args):
                     scale_maps = []
                     for paa_s in (args.paa_scales if args.paa_scales else [None]):
                         patch_feature = raw_patch_feature if paa_s is None else paa_torch(raw_patch_feature, paa_s)
+                        if adapter is not None:
+                            patch_feature = adapter(patch_feature, z_adapt)
                         patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
                         similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
                         similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
