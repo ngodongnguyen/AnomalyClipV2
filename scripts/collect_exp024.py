@@ -73,7 +73,15 @@ def win(d, thr):
     return None not in d and statistics.mean(d) >= thr and all(x > 0 for x in d)
 
 
+def missing(t):
+    """(kind, set, arm, seed) of every result that could not be read."""
+    return [(k, n, a, s) for k in ("pix", "img") for n in t[k] for a in ARMS for s in SEEDS if t[k][n][a][s] is None]
+
+
 def decide(t):
+    miss = missing(t)
+    if miss:   # never apply the rules to partial data: a missing value would silently count as "not a win"
+        return {k: ("INCOMPLETE", f"{len(miss)} of {2 * 0 + sum(len(t[kk]) for kk in t) * len(ARMS) * len(SEEDS)} results missing") for k in ("R1", "R2", "R3")}
     res = {}
     # R1: ECP vs ZO on pixel, both PRO and AUROC >= +1.0 as wins
     wp = sum(win(diffs(t, "pix", n, "ECP", "ZO", 1), 1.0) for n, _ in PIX)
@@ -109,6 +117,14 @@ def report(t):
                 da, db = diffs(t, kind, name, a, b, 0), diffs(t, kind, name, a, b, 1)
                 f = lambda d: "n/a" if None in d else f"{statistics.mean(d):+5.1f} ({' '.join(f'{x:+.1f}' for x in d)})"
                 print(f"{a}-{b:4s} {name:9s} AUROC {f(da):28s} {'PRO' if kind == 'pix' else 'AP '} {f(db)}")
+    miss = missing(t)
+    if miss:
+        by = {}
+        for k, n, a, sd in miss:
+            by.setdefault((a, sd), []).append(n)
+        print("\n== MISSING results (the rules are NOT applied until all are present):")
+        for (a, sd), ns in sorted(by.items()):
+            print(f"   {a:5s} seed {sd}: {len(ns)} sets ({', '.join(ns)})")
     print("\n== pre-registered rules")
     for k, (verdict, why) in decide(t).items():
         print(f"{k}: {verdict}   [{why}]")

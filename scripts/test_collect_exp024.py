@@ -20,6 +20,9 @@ r = c.decide(fake(0.3, 0.1, 0.2, 0.1)); assert r["R1"][0] == "NOT CONFIRMED" and
 t = fake(3.0, 2.5, 4.0, 1.0); t["pix"]["ColonDB"]["ECP"][222] = (79.0, 55.0)       # one seed negative -> that set is not a win
 for n in ("ClinicDB", "Kvasir", "ISIC"): t["pix"][n]["ECP"][333] = (70.0, 50.0)
 r = c.decide(t); assert r["R1"][0] != "CONFIRMED", r
+t = fake(3.0, 2.5, 4.0, 1.0); t["pix"]["Kvasir"]["DUAL"][333] = None
+r = c.decide(t); assert all(v[0] == "INCOMPLETE" for v in r.values()), r      # partial data is never decided
+assert c.missing(t) == [("pix", "Kvasir", "DUAL", 333)]
 # parsing
 import tempfile
 d = tempfile.mkdtemp(); p = os.path.join(d, "log.txt")
