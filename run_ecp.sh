@@ -167,6 +167,11 @@ case "$1" in
   smoke_va)       ZOOM=0.5; TRAIN_EXTRA="--token_adapter z"; train ecp_va_smoke extent 1 ;;
   train_va_z)     ZOOM=0.5; TRAIN_EXTRA="--token_adapter z"; train ecp_va_z extent 15 ;;
   train_va_const) ZOOM=0.5; TRAIN_EXTRA="--token_adapter const"; train ecp_va_const extent 15 ;;
+  # EXP-024: matched three-seed arms (same recipe as scripts/train_exp012_matched_pair.sh, new checkpoint names so the older seed-222/333 checkpoints are NOT overwritten).
+  #   bash run_ecp.sh train_m_ecp 222 | train_m_zoom 222 | train_m_dual 222   (seed 111 already exists: EXP-012-matched/{ecp_extent,zoom_only}/checkpoints and ecp_dual)
+  train_m_ecp)  ZOOM=0.5; train matched_ecp_s$2  extent 15 $2 ;;
+  train_m_zoom) ZOOM=0.5; train matched_zoom_s$2 none   15 $2 ;;
+  train_m_dual) ZOOM=0.5; train matched_dual_s$2 dual   15 $2 ;;
   # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
   #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
   fixed_ckpt)
@@ -193,5 +198,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_va|train_va_z|train_va_const|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_va|train_va_z|train_va_const|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac
