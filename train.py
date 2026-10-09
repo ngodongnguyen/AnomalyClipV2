@@ -15,6 +15,7 @@ from utils import get_transform
 from extent_prompt import (ExtentConditioner, TokenAdapter, area_to_z, visual_descriptor, conditioned_text_features,
                            batched_similarity)
 from paa import paa_torch
+from zshuffle import derangement_among
 
 
 def roi_resample(feat_map, boxes_norm, out_size):
@@ -69,6 +70,7 @@ def setup_seed(seed):
 def train(args):
 
     logger = get_logger(args.save_path)
+    z_shuffle_rng = np.random.RandomState(args.seed + 1)   # only used with --ec_z_shuffle batch
 
     preprocess, target_transform = get_transform(args)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -175,6 +177,9 @@ def train(args):
                 lab = label.long().to(device)
                 area = gt.reshape(image.shape[0], -1).mean(1)
                 z_gt = area_to_z(area)
+                if args.ec_z_shuffle == "batch":   # EXP-028 control: z labels of anomalous images are rotated among them (default off)
+                    src = torch.from_numpy(derangement_among((lab == 1).cpu().numpy(), z_shuffle_rng)).to(z_gt.device)
+                    z_gt = z_gt[src]
                 desc = visual_descriptor(image_features, patch_features)
                 z_teacher = None
                 if args.extent_cond == "extent" and args.ec_teacher_p > 0:
@@ -302,6 +307,8 @@ if __name__ == '__main__':
     parser.add_argument("--extent_cond", type=str, default="none", choices=["none", "extent", "global", "dual"],
                          help="none = original prompts; extent = extent-conditioned prompts; global = image-conditioned control")
     parser.add_argument("--ec_weight", type=float, default=1.0, help="weight of the extent-estimation loss")
+    parser.add_argument("--ec_z_shuffle", type=str, default="none", choices=["none", "batch"],
+                         help="EXP-028 control: rotate the extent labels (teacher z and extent-loss target) among the anomalous images of a batch")
     parser.add_argument("--ec_teacher_p", type=float, default=0.5,
                          help="prob. of conditioning on the ground-truth extent (anomalous images) instead of the estimate")
     args = parser.parse_args()
