@@ -181,6 +181,50 @@ def test_hit_rate():
     assert np.isnan(P.hit_rate(y, s, np.zeros_like(y), 0.5))
 
 
+def test_fill_shift_matches_reflect_on_valid_and_is_constant_elsewhere():
+    rng = np.random.RandomState(0)
+    img = rng.randn(3, 20, 24)
+    for dx, dy in ((0, 0), (5, -3), (-7, 4), (9, 9), (-10, -8)):
+        f = P.shift_image_fill(img, dx, dy, np.array([0.1, -0.2, 0.3]).reshape(3, 1, 1))
+        # content: every valid output pixel equals the translated source, and agrees with the reflect version there
+        r = P.shift_image(img, dx, dy)
+        h, w = img.shape[-2:]
+        vo = np.zeros((h, w), bool)
+        y0, y1 = max(0, -dy), min(h, h - dy); x0, x1 = max(0, -dx), min(w, w - dx)
+        if y1 > y0 and x1 > x0:
+            vo[y0 + dy:y1 + dy, x0 + dx:x1 + dx] = True
+        assert np.allclose(f[:, vo], r[:, vo])
+        # padding: exactly the fill value, no image content
+        for c, val in enumerate((0.1, -0.2, 0.3)):
+            assert np.all(f[c][~vo] == val)
+        # the valid area is the valid_mask translated
+        assert vo.sum() == P.valid_mask((h, w), dx, dy).sum()
+    # identity
+    assert np.array_equal(P.shift_image_fill(img, 0, 0, 0.0), img)
+    # scalar fill, shift larger than the canvas -> everything is fill
+    assert np.all(P.shift_image_fill(img, 100, 0, 0.0) == 0.0)
+
+
+def test_artifact_free_verdict_boundaries():
+    def S(d, dlo, dhi, r, rlo):
+        return dict(delta=(d, dlo, dhi), rec_minus_sham=(r, rlo, r + 0.05))
+    ok = S(0.05, 0.03, 0.07, 0.04, 0.02)
+    names = ("ClinicDB", "ColonDB", "ISIC", "Endo")
+    mk = lambda lst: dict(zip(names, lst))
+    assert P.verdict_artifact_free(mk([ok] * 4))[0] == "ARTIFACT-FREE SUPPORT"
+    assert P.verdict_artifact_free(mk([ok] * 3 + [S(0.0, -0.02, 0.01, 0.0, -0.01)]))[0] == "ARTIFACT-FREE SUPPORT"
+    # delta passes but the recentre gain alone does not (random shifts hurt, recentre does not help): not artifact-free support
+    weak_rec = S(0.05, 0.03, 0.07, 0.004, 0.001)
+    assert P.verdict_artifact_free(mk([weak_rec] * 4))[0] == "INCONCLUSIVE"
+    # recentre gain exactly at the threshold counts, just below does not
+    assert P.rec_ok(0.005, 0.0001) and not P.rec_ok(0.0049, 0.0001) and not P.rec_ok(0.01, 0.0)
+    nul = S(0.002, -0.01, 0.009, 0.0, -0.01)
+    assert P.verdict_artifact_free(mk([nul] * 3 + [ok]))[0] == "ARTIFACT SUSPECTED"
+    assert P.verdict_artifact_free(mk([nul] * 2 + [ok] * 2))[0] == "INCONCLUSIVE"
+    assert P.verdict_artifact_free({"ClinicDB": ok})[0] == "INCOMPLETE"
+    assert P.verdict_artifact_free(mk([ok] * 3 + [None]))[0] == "INCOMPLETE"
+
+
 if __name__ == "__main__":
     n = 0
     for k, f in sorted(globals().items()):

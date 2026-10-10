@@ -105,9 +105,24 @@ def stage_pixel(args):
             amap = ((sm[..., 1] + 1 - sm[..., 0]) / 2.0)[0].float().cpu()
         return gaussian_filter(amap.numpy(), sigma=args.sigma).astype(np.float32)
 
+    from AnomalyCLIP_lib.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
+    if args.pad == "mean":                                          # EXP-035: CLIP-mean colour = 0 in the normalised tensor
+        pad_fill = torch.zeros(3, 1, 1, device=device)
+    elif args.pad == "black":                                       # EXP-035: black = (0 - mean) / std per channel
+        pad_fill = ((0.0 - torch.tensor(OPENAI_DATASET_MEAN)) / torch.tensor(OPENAI_DATASET_STD)).reshape(3, 1, 1).to(device)
+    else:
+        pad_fill = None
+    print(f"[stage] padding of the translated tensor: {args.pad}")
+
     def shifted(img, dx, dy):
         if dx == 0 and dy == 0:
             return img                                              # identical tensor: SHAM is exactly the EXP-012 forward
+        if pad_fill is not None:                                    # content-free padding (numpy reference: P.shift_image_fill)
+            out = pad_fill.expand(3, S, S).clone()
+            y0, y1, x0, x1 = max(0, -dy), min(S, S - dy), max(0, -dx), min(S, S - dx)
+            if y1 > y0 and x1 > x0:
+                out[:, y0 + dy:y1 + dy, x0 + dx:x1 + dx] = img[:, y0:y1, x0:x1]
+            return out
         iy = torch.from_numpy(P.shift_indices(S, dy)).to(img.device)
         ix = torch.from_numpy(P.shift_indices(S, dx)).to(img.device)
         return img[:, iy][:, :, ix]                                 # out[y, x] = in[reflect(y - dy), reflect(x - dx)]
@@ -220,6 +235,22 @@ def stage_report(args):
         if not os.path.isfile(p):
             print(f"MISSING {p}"); continue
         res[s] = report_set(load_rows(p), s, args.boot)
+    if args.exp035:
+        by35 = {}
+        for s in DECISION:
+            st = res.get(s, {}).get("peripheral")
+            by35[s] = dict(delta=st["delta"], rec_minus_sham=st["rec_minus_sham"]) if st and st.get("n") else None
+        print("\n================ VERDICT (rule fixed in research/EXPERIMENTS.md EXP-035; decision sets ClinicDB, ColonDB, ISIC, Endo; peripheral tercile) ================")
+        for s in DECISION:
+            v = by35[s]
+            if v is None:
+                print(f"{s:9s} no kept images / file missing"); continue
+            (dm, dlo, dhi), (rm, rlo, rhi) = v["delta"], v["rec_minus_sham"]
+            print(f"{s:9s} delta {dm:+.4f} [{dlo:+.4f}, {dhi:+.4f}] PASS_S {P.pass_support(dm, dlo)} PASS_N {P.pass_null(dm, dhi)}   REC-SHAM {rm:+.4f} [{rlo:+.4f}, {rhi:+.4f}] REC_OK {P.rec_ok(rm, rlo)}")
+        label, ns, nr, nn = P.verdict_artifact_free(by35)
+        print(f"PASS_S on {ns}/4, REC_OK on {nr}/4, PASS_N on {nn}/4  ->  {label}")
+        print("EXP-034 (reflect) reference: delta +0.153 / +0.154 / +0.016 / +0.099 and REC-SHAM +0.110 / +0.143 / +0.004 / +0.065 on ClinicDB / ColonDB / ISIC / Endo.")
+        return
     print("\n================ VERDICT (rule fixed in research/EXPERIMENTS.md EXP-034; decision sets ClinicDB, ColonDB, ISIC, Endo; peripheral tercile) ================")
     by = {}
     for s in DECISION:
@@ -249,6 +280,8 @@ if __name__ == "__main__":
     ap.add_argument("--boot", type=int, default=2000)
     ap.add_argument("--redo", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--pad", choices=("reflect", "mean", "black"), default="reflect", help="EXP-035: padding of the translated tensor (default reflect = EXP-034)")
+    ap.add_argument("--exp035", action="store_true", help="report: apply the EXP-035 artifact-free rule instead of the EXP-034 rule")
     ap.add_argument("--no_central", action="store_true", help="skip the central-tercile control (halves the forwards)")
     ap.add_argument("--sigma", type=int, default=4)
     ap.add_argument("--z_pix", type=float, default=1.6)

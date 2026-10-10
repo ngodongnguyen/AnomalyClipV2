@@ -7,6 +7,7 @@ from scipy.ndimage import center_of_mass
 
 MIN_CLASS = 20
 D_SUPPORT, D_NULL, D_SUPPORT_N, D_NULL_N = 0.010, 0.003, 3, 3
+REC_SUPPORT = 0.005          # EXP-035: recentre-minus-sham gain required in addition to the delta test
 
 
 def reflect_index(i, n):
@@ -29,6 +30,19 @@ def shift_image(img, dx, dy):
     img = np.asarray(img)
     h, w = img.shape[-2:]
     return img[..., shift_indices(h, dy), :][..., :, shift_indices(w, dx)]
+
+
+def shift_image_fill(img, dx, dy, fill):
+    """Translate an (..., H, W) array by (dx, dy) and fill every uncovered pixel with `fill` (a scalar or an array broadcastable to (..., 1, 1)); no mirrored content.
+    out[y + dy, x + dx] = in[y, x] on the valid rectangle (EXP-035; numpy reference of the torch slice-copy used on the server)."""
+    img = np.asarray(img)
+    h, w = img.shape[-2:]
+    out = np.broadcast_to(np.asarray(fill, img.dtype), img.shape).copy()
+    y0, y1 = max(0, -dy), min(h, h - dy)
+    x0, x1 = max(0, -dx), min(w, w - dx)
+    if y1 > y0 and x1 > x0:
+        out[..., y0 + dy:y1 + dy, x0 + dx:x1 + dx] = img[..., y0:y1, x0:x1]
+    return out
 
 
 def valid_mask(shape, dx, dy):
@@ -160,3 +174,25 @@ def verdict(stats_by_set, decision=("ClinicDB", "ColonDB", "ISIC", "Endo")):
     if nn >= D_NULL_N:
         return "NOT SUPPORTED", ns, nn
     return "INCONCLUSIVE", ns, nn
+
+
+def rec_ok(mean, lo):
+    """EXP-035: the recentre gain over SHAM is >= +0.005 with CI lower bound > 0."""
+    return bool(np.isfinite(mean) and np.isfinite(lo) and round(mean, 10) >= REC_SUPPORT and round(lo, 10) > 0)
+
+
+def verdict_artifact_free(sets, decision=("ClinicDB", "ColonDB", "ISIC", "Endo")):
+    """EXP-035. sets[set] = dict(delta=(mean, lo, hi), rec_minus_sham=(mean, lo, hi)) (or None when the set has no kept images).
+    -> (label, n_delta_support, n_rec_ok, n_null).  ARTIFACT-FREE SUPPORT needs PASS_S on >= 3/4 AND REC_OK on >= 3/4; ARTIFACT SUSPECTED if PASS_N on >= 3/4."""
+    for s in decision:
+        v = sets.get(s)
+        if v is None or not np.isfinite(v["delta"][0]) or not np.isfinite(v["rec_minus_sham"][0]):
+            return "INCOMPLETE", 0, 0, 0
+    ns = sum(pass_support(sets[s]["delta"][0], sets[s]["delta"][1]) for s in decision)
+    nr = sum(rec_ok(sets[s]["rec_minus_sham"][0], sets[s]["rec_minus_sham"][1]) for s in decision)
+    nn = sum(pass_null(sets[s]["delta"][0], sets[s]["delta"][2]) for s in decision)
+    if ns >= D_SUPPORT_N and nr >= D_SUPPORT_N:
+        return "ARTIFACT-FREE SUPPORT", ns, nr, nn
+    if nn >= D_NULL_N:
+        return "ARTIFACT SUSPECTED", ns, nr, nn
+    return "INCONCLUSIVE", ns, nr, nn
