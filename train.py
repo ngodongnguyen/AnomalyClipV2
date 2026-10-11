@@ -80,7 +80,7 @@ def train(args):
     model, _ = AnomalyCLIP_lib.load("ViT-L/14@336px", device=device, design_details = AnomalyCLIP_parameters)
     model.eval()
 
-    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p)
+    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p, translate_aug_p=args.translate_aug_p)
     train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
 
     consistency_loader, consistency_iter = None, None
@@ -292,6 +292,7 @@ if __name__ == '__main__':
                         help="post-encoder bottleneck adapter on the patch tokens: z = conditioned on the extent z, const = capacity-matched control ignoring z, none = original behaviour")
     parser.add_argument("--adapter_rank", type=int, default=32)
     parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
+    parser.add_argument("--translate_aug_p", type=float, default=0.0, help="EXP-037: prob. of a label-preserving translation (CLIP-mean fill) of a training image and its mask (0 = original behaviour)")
     parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
     parser.add_argument("--consistency_weight", type=float, default=0.0,
                          help="weight of the scale-consistency loss (0 = off, original behaviour)")

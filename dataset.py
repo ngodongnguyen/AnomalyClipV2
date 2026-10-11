@@ -40,8 +40,9 @@ def generate_class_info(dataset_name):
     return obj_list, class_name_map_class_id
 
 class Dataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45)):
+    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45), translate_aug_p=0.0):
         self.root = root
+        self.translate_aug_p = translate_aug_p     # EXP-037, default 0 = original behaviour
         self.zoom_aug_p = zoom_aug_p
         self.zoom_target = zoom_target
         self.transform = transform
@@ -148,6 +149,13 @@ class Dataset(data.Dataset):
                 img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
         if self.zoom_aug_p > 0 and anomaly == 1 and random.random() < self.zoom_aug_p:
             img, img_mask = self._zoom_around_anomaly(img, img_mask)
+        if self.translate_aug_p > 0 and random.random() < self.translate_aug_p:
+            # EXP-037: label-preserving translation with CLIP-mean fill (lesion bounding box stays inside the canvas; normal images shift too)
+            from transaug import translate_pair
+            if img_mask.size != img.size:
+                img_mask = Image.new('L', img.size, 0) if anomaly == 0 else img_mask
+            if img_mask.size == img.size:
+                img, img_mask, _ = translate_pair(img.convert('RGB') if img.mode != 'RGB' else img, img_mask, random, anomaly == 1)
         # transforms
         img = self.transform(img) if self.transform is not None else img
         img_mask = self.target_transform(   
