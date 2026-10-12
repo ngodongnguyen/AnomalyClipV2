@@ -111,11 +111,17 @@ def train(args):
     if args.extent_cond != "none":
         assert args.consistency_weight == 0, "extent conditioning is not combined with the consistency loss"
         conditioner = ExtentConditioner(mode=args.extent_cond).to(device)
+    static_heads = None
+    if args.ec_static_aux:
+        assert args.extent_cond == "extent", "static-head auxiliary training requires extent conditioning"
+        assert args.token_adapter == "none" and not args.paa_scales, "static-head pilot uses the original patch readout"
+        static_heads = ExtentConditioner(mode="dual").to(device)
     adapter = None
     if args.token_adapter != "none":
         assert args.extent_cond == "extent", "the token adapter is only defined on top of the extent-conditioned model"
         adapter = TokenAdapter(rank=args.adapter_rank, z_cond=(args.token_adapter == "z")).to(device)
     params = list(prompt_learner.parameters()) + (list(conditioner.parameters()) if conditioner is not None else []) \
+        + (list(static_heads.parameters()) if static_heads is not None else []) \
         + (list(adapter.parameters()) if adapter is not None else [])
     optimizer = torch.optim.Adam(params, lr=args.learning_rate, betas=(0.5, 0.999))
 
@@ -132,6 +138,8 @@ def train(args):
         prompt_learner.train()
         if conditioner is not None:
             conditioner.train()
+        if static_heads is not None:
+            static_heads.train()
         if adapter is not None:
             adapter.train()
         loss_list = []
@@ -224,6 +232,24 @@ def train(args):
                 loss = loss / len(args.paa_scales)   # keep the pixel-vs-image loss ratio of the single-map baseline
             loss = lam * loss
 
+            static_task_loss = None
+            if static_heads is not None:
+                n_b = image.shape[0]
+                static_img = conditioned_text_features(model, prompt_learner, *static_heads.dual_shift("img", n_b))
+                static_pix = conditioned_text_features(model, prompt_learner, *static_heads.dual_shift("pix", n_b))
+                static_logits = torch.einsum("bc,btc->bt", image_features, static_img) / 0.07
+                static_image_loss = F.cross_entropy(static_logits, label.long().to(device))
+                static_pixel_loss = 0
+                for idx, raw_patch_feature in enumerate(patch_features):
+                    if idx >= args.feature_map_layer[0]:
+                        patch_feature = F.normalize(raw_patch_feature, dim=-1)
+                        similarity = batched_similarity(patch_feature, static_pix)
+                        static_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
+                        static_pixel_loss += loss_focal(static_map, gt)
+                        static_pixel_loss += loss_dice(static_map[:, 1, :, :], gt)
+                        static_pixel_loss += loss_dice(static_map[:, 0, :, :], 1-gt)
+                static_task_loss = lam * static_pixel_loss + static_image_loss
+
             consistency_loss = torch.tensor(0.0, device=device)
             if consistency_loader is not None:
                 img_a, img_b, box_a, box_b = next_consistency_batch()
@@ -243,7 +269,10 @@ def train(args):
                 consistency_loss_list.append(consistency_loss.item())
 
             optimizer.zero_grad()
-            (loss + image_loss + args.consistency_weight * consistency_loss + args.ec_weight * extent_loss).backward()
+            task_loss = loss + image_loss
+            if static_task_loss is not None:
+                task_loss = 0.5 * (task_loss + static_task_loss)
+            (task_loss + args.consistency_weight * consistency_loss + args.ec_weight * extent_loss).backward()
             optimizer.step()
             loss_list.append(loss.item())
         # logs
@@ -265,6 +294,9 @@ def train(args):
             if conditioner is not None:
                 ckpt["conditioner"] = conditioner.state_dict()
                 ckpt["extent_cond"] = args.extent_cond
+            if static_heads is not None:
+                ckpt["static_heads"] = static_heads.state_dict()
+                ckpt["ec_static_aux"] = True
             torch.save(ckpt, ckp_path)
 
 if __name__ == '__main__':
@@ -312,6 +344,8 @@ if __name__ == '__main__':
                          help="EXP-028 control: rotate the extent labels (teacher z and extent-loss target) among the anomalous images of a batch")
     parser.add_argument("--ec_teacher_p", type=float, default=0.5,
                          help="prob. of conditioning on the ground-truth extent (anomalous images) instead of the estimate")
+    parser.add_argument("--ec_static_aux", action="store_true",
+                        help="train source-only static image/pixel prompts alongside ECP; use static prompts at test")
     args = parser.parse_args()
     setup_seed(args.seed)
     train(args)

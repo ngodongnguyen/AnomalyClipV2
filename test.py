@@ -86,6 +86,7 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
         'checkpoint_path': os.path.abspath(args.checkpoint_path),
         'checkpoint_sha256': _sha256_file(args.checkpoint_path),
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
+        'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -160,6 +161,7 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
         'checkpoint_path': os.path.abspath(args.checkpoint_path),
         'checkpoint_sha256': _sha256_file(args.checkpoint_path),
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
+        'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -240,6 +242,15 @@ def test(args):
         conditioner.load_state_dict(checkpoint["conditioner"])
         conditioner.eval()
 
+    static_heads = None
+    if checkpoint.get("ec_static_aux"):
+        assert checkpoint.get("static_heads") is not None, "static-head checkpoint is incomplete"
+        assert not (args.ec_oracle or args.ec_const_z is not None or args.ec_z_img is not None or args.ec_z_pix is not None), \
+            "static-head inference does not use z flags"
+        static_heads = ExtentConditioner(mode="dual").to(device)
+        static_heads.load_state_dict(checkpoint["static_heads"])
+        static_heads.eval()
+
     adapter = None
     if checkpoint.get("token_adapter") is not None:
         adapter = TokenAdapter(**checkpoint["token_adapter_cfg"]).to(device)
@@ -250,6 +261,11 @@ def test(args):
     text_features_base = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
     text_features_base = torch.stack(torch.chunk(text_features_base, dim = 0, chunks = 2), dim = 1)
     text_features_base = text_features_base/text_features_base.norm(dim=-1, keepdim=True)
+    static_text_img = static_text_pix = None
+    if static_heads is not None:
+        with torch.no_grad():
+            static_text_img = conditioned_text_features(model, prompt_learner, *static_heads.dual_shift("img", 1))
+            static_text_pix = conditioned_text_features(model, prompt_learner, *static_heads.dual_shift("pix", 1))
 
 
     # Pixel-head distractor suppression (no training): s' = s * (1 - d), d = softmax mass (T=100) on distractor
@@ -300,7 +316,9 @@ def test(args):
             text_features_img = text_features_pix = text_features_base
             z_pred_val = z_gt_val = float('nan')
             z_adapt = None   # z fed to the optional token adapter (pixel head only)
-            if conditioner is not None and conditioner.mode == "dual":
+            if static_heads is not None:
+                text_features_img, text_features_pix = static_text_img, static_text_pix
+            elif conditioner is not None and conditioner.mode == "dual":
                 # control (EXP-022): constant head-specific shifts, the z flags are ignored
                 text_features_img = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("img", image_features.shape[0]))
                 text_features_pix = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("pix", image_features.shape[0]))
