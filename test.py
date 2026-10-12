@@ -289,6 +289,7 @@ def test(args):
     bad_case_records = []
     per_image_rows = []
     image_level_rows = []
+    exp039_rows = []
     image_level_metric_values = {}
     pixel_level_metric_values = {}
     # image-level metrics only need one score per image; keeping full-res maps/masks for every image
@@ -352,7 +353,7 @@ def test(args):
                     'ground_truth_image_label': int(items['anomaly'][0]),
                     'image_anomaly_score': float(text_probs.detach().cpu()[0]),
                 })
-            if not need_pixel:
+            if not need_pixel and not args.exp039_pool_scores:
                 continue
             anomaly_map_list = []; d_list = []
             for idx, raw_patch_feature in enumerate(patch_features):
@@ -387,6 +388,20 @@ def test(args):
             if args.distractor_rerank != 'none':
                 d_avg = torch.stack(d_list).mean(0).detach().cpu().numpy()
                 anomaly_map = torch.stack([torch.from_numpy(rerank_pool(a_, d_)) for a_, d_ in zip(anomaly_map.numpy(), d_avg)], dim = 0)
+            if args.exp039_pool_scores:
+                flat = anomaly_map[0].flatten()
+                sorted_scores = torch.sort(flat, descending=True).values
+                exp039_rows.append({
+                    'dataset': os.path.basename(os.path.normpath(args.data_path)),
+                    'category': cls_name[0],
+                    'sample_id': os.path.relpath(items['img_path'][0], args.data_path),
+                    'ground_truth_image_label': int(items['anomaly'][0]),
+                    'cls_score': float(text_probs[0].detach().cpu()),
+                    **{f'top{pct}_score': float(sorted_scores[:max(1, (flat.numel() * pct + 99) // 100)].mean())
+                       for pct in (1, 5, 10)},
+                })
+            if not need_pixel:
+                continue
             results[cls_name[0]]['anomaly_maps'].append(anomaly_map)
             visualizer(items['img_path'], anomaly_map.detach().cpu().numpy(), args.image_size, args.save_path, cls_name, gt_mask.detach().cpu().numpy())
 
@@ -498,6 +513,13 @@ def test(args):
             'image_ap': float(np.mean(image_ap_list)),
         }
         _write_image_level_artifacts(args, image_level_rows, image_level_metric_values, checkpoint)
+    if args.exp039_pool_scores:
+        with open(os.path.join(args.save_path, 'exp039_pool_scores.csv'), 'w', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=[
+                'dataset', 'category', 'sample_id', 'ground_truth_image_label',
+                'cls_score', 'top1_score', 'top5_score', 'top10_score'])
+            writer.writeheader()
+            writer.writerows(exp039_rows)
     if args.export_pixel_metrics and args.metrics == 'pixel-level':
         pixel_level_metric_values['mean'] = {
             'pixel_auroc': float(np.mean(pixel_auroc_list)),
@@ -524,6 +546,8 @@ if __name__ == '__main__':
     parser.add_argument("--metrics", type=str, default='image-pixel-level')
     parser.add_argument("--export_image_scores", action="store_true",
                         help="save paired image-level scores, full-precision metrics, and run metadata")
+    parser.add_argument("--exp039_pool_scores", action="store_true",
+                        help="EXP-039: export top-1/5/10 percent means of the smoothed pixel map")
     parser.add_argument("--export_pixel_metrics", action="store_true",
                         help="save full-precision pixel metrics, paired per-image mask statistics, and run metadata")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
@@ -545,6 +569,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.export_pixel_metrics and args.metrics != 'pixel-level':
         parser.error('--export_pixel_metrics requires --metrics pixel-level')
+    if args.exp039_pool_scores and (args.metrics != 'image-level' or not args.export_image_scores):
+        parser.error('--exp039_pool_scores requires --metrics image-level --export_image_scores')
     print(args)
     setup_seed(args.seed)
     test(args)
