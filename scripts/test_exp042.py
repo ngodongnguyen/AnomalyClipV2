@@ -54,7 +54,15 @@ class Exp042Test(unittest.TestCase):
                 self.assertEqual(legacy['img'].tobytes(), paired['img'].tobytes())
                 self.assertEqual(paired['img_original'].size, (64, 64))
                 self.assertLess(paired['img'].width, 64)
+                self.assertTrue(paired['zoom_applied'])
                 self.assertNotIn('img_original', legacy)
+                no_zoom = dataset_module.Dataset(**{**kwargs, 'zoom_aug_p': 0.0},
+                                                 return_original=True)[0]
+                self.assertFalse(no_zoom['zoom_applied'])
+                self.assertEqual(no_zoom['img'].tobytes(), no_zoom['img_original'].tobytes())
+                failed_crop_dataset = dataset_module.Dataset(**kwargs, return_original=True)
+                failed_crop_dataset._zoom_around_anomaly = lambda img, mask: (img, mask)
+                self.assertFalse(failed_crop_dataset[0]['zoom_applied'])
         finally:
             for key, value in old.items():
                 if value is None:

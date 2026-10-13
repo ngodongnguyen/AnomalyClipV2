@@ -173,10 +173,26 @@ def train(args):
                 # DPAM_layer represents the number of layer refined by DPAM from top to bottom
                 # DPAM_layer = 1, no DPAM is used
                 # DPAM_layer = 20 as default
+                zoomed = None
+                if args.exp043_ecp_cls_view != "legacy":
+                    # Only successful anomaly crops differ from their original view.
+                    # Encode those originals first, then release their dense tokens.
+                    zoomed = items['zoom_applied'].bool()
+                if zoomed is not None and zoomed.any():
+                    full_cls_features, original_patches = model.encode_image(
+                        items['img_original'][zoomed].to(device), args.features_list, DPAM_layer=20)
+                    del original_patches
+                    if args.exp043_ecp_cls_view == "split":
+                        full_cls_features = F.normalize(full_cls_features, dim=-1)
+                    else:
+                        del full_cls_features
                 image_features, patch_features = model.encode_image(image, args.features_list, DPAM_layer = 20)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 cls_features = image_features
-                if cls_view != "legacy":
+                if args.exp043_ecp_cls_view == "split" and zoomed.any():
+                    cls_features = image_features.clone()
+                    cls_features[zoomed.to(device)] = full_cls_features
+                if args.exp042_cls_view != "legacy":
                     original_features, _ = model.encode_image(items['img_original'].to(device),
                                                                args.features_list, DPAM_layer=20)
                     if cls_view == "split":

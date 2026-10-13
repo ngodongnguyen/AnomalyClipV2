@@ -57,9 +57,11 @@ case "${1:-}" in
   check)
     python -m py_compile train.py dataset.py scripts/collect_exp043.py scripts/test_exp043.py
     bash -n scripts/run_exp043.sh
-    python -m unittest scripts.test_exp043 -v ;;
+    python -m unittest scripts.test_exp042 scripts.test_exp043 -v ;;
   smoke)
-    train_split 1 exp043_ecp_split_smoke
+    if [ ! -f checkpoints/exp043_ecp_split_smoke/epoch_1.pth ]; then
+      train_split 1 exp043_ecp_split_smoke
+    fi
     test -f checkpoints/exp043_ecp_split_smoke/epoch_1.pth ;;
   image)
     test -f "$BASE"

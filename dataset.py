@@ -149,8 +149,11 @@ class Dataset(data.Dataset):
                 img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
                 img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
         original_img = img.copy() if self.return_original else None
+        zoom_applied = False
         if self.zoom_aug_p > 0 and anomaly == 1 and random.random() < self.zoom_aug_p:
+            before_size = img.size
             img, img_mask = self._zoom_around_anomaly(img, img_mask)
+            zoom_applied = img.size != before_size
         if self.translate_aug_p > 0 and random.random() < self.translate_aug_p:
             # EXP-037: label-preserving translation with CLIP-mean fill (lesion bounding box stays inside the canvas; normal images shift too)
             from transaug import translate_pair
@@ -167,4 +170,5 @@ class Dataset(data.Dataset):
                   'img_path': os.path.join(self.root, img_path), "cls_id": self.class_name_map_class_id[cls_name]}
         if self.return_original:
             result['img_original'] = self.transform(original_img) if self.transform is not None else original_img
+            result['zoom_applied'] = zoom_applied
         return result
