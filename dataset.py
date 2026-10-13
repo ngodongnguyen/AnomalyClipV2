@@ -40,8 +40,9 @@ def generate_class_info(dataset_name):
     return obj_list, class_name_map_class_id
 
 class Dataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45), translate_aug_p=0.0):
+    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45), translate_aug_p=0.0, return_original=False):
         self.root = root
+        self.return_original = return_original
         self.translate_aug_p = translate_aug_p     # EXP-037, default 0 = original behaviour
         self.zoom_aug_p = zoom_aug_p
         self.zoom_target = zoom_target
@@ -147,6 +148,7 @@ class Dataset(data.Dataset):
             else:
                 img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
                 img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
+        original_img = img.copy() if self.return_original else None
         if self.zoom_aug_p > 0 and anomaly == 1 and random.random() < self.zoom_aug_p:
             img, img_mask = self._zoom_around_anomaly(img, img_mask)
         if self.translate_aug_p > 0 and random.random() < self.translate_aug_p:
@@ -161,5 +163,8 @@ class Dataset(data.Dataset):
         img_mask = self.target_transform(   
             img_mask) if self.target_transform is not None and img_mask is not None else img_mask
         img_mask = [] if img_mask is None else img_mask
-        return {'img': img, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly,
-                'img_path': os.path.join(self.root, img_path), "cls_id": self.class_name_map_class_id[cls_name]}    
+        result = {'img': img, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly,
+                  'img_path': os.path.join(self.root, img_path), "cls_id": self.class_name_map_class_id[cls_name]}
+        if self.return_original:
+            result['img_original'] = self.transform(original_img) if self.transform is not None else original_img
+        return result

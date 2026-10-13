@@ -68,6 +68,11 @@ def setup_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 def train(args):
+    if args.exp042_cls_view != "legacy":
+        if (args.extent_cond != "none" or args.zoom_aug_p != 0.5 or args.translate_aug_p != 0
+                or args.consistency_weight != 0 or args.token_adapter != "none"
+                or args.paa_scales or args.ec_static_aux):
+            raise ValueError("EXP-042 split/sham requires zoom-only prompts and the registered augmentation/loss settings")
 
     logger = get_logger(args.save_path)
     z_shuffle_rng = np.random.RandomState(args.seed + 1)   # only used with --ec_z_shuffle batch
@@ -80,7 +85,7 @@ def train(args):
     model, _ = AnomalyCLIP_lib.load("ViT-L/14@336px", device=device, design_details = AnomalyCLIP_parameters)
     model.eval()
 
-    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p, translate_aug_p=args.translate_aug_p)
+    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p, translate_aug_p=args.translate_aug_p, return_original=args.exp042_cls_view != "legacy")
     train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
 
     consistency_loader, consistency_iter = None, None
@@ -162,6 +167,12 @@ def train(args):
                 # DPAM_layer = 20 as default
                 image_features, patch_features = model.encode_image(image, args.features_list, DPAM_layer = 20)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                cls_features = image_features
+                if args.exp042_cls_view != "legacy":
+                    original_features, _ = model.encode_image(items['img_original'].to(device),
+                                                               args.features_list, DPAM_layer=20)
+                    if args.exp042_cls_view == "split":
+                        cls_features = F.normalize(original_features, dim=-1)
                     
            ####################################
             extent_loss = torch.tensor(0.0, device=device)
@@ -172,7 +183,7 @@ def train(args):
                 text_features = torch.stack(torch.chunk(text_features, dim = 0, chunks = 2), dim = 1)
                 text_features = text_features/text_features.norm(dim=-1, keepdim=True)
                 # Apply DPAM surgery
-                text_probs = image_features.unsqueeze(1) @ text_features.permute(0, 2, 1)
+                text_probs = cls_features.unsqueeze(1) @ text_features.permute(0, 2, 1)
                 text_probs = text_probs[:, 0, ...]/0.07
             elif conditioner.mode == "dual":
                 # control (EXP-022): head-specific learned constant shifts; image loss uses the image-head prompts, the
@@ -286,6 +297,8 @@ def train(args):
         if (epoch + 1) % args.save_freq == 0:
             ckp_path = os.path.join(args.save_path, 'epoch_' + str(epoch + 1) + '.pth')
             ckpt = {"prompt_learner": prompt_learner.state_dict()}
+            if args.exp042_cls_view != "legacy":
+                ckpt["exp042_cls_view"] = args.exp042_cls_view
             if args.paa_scales:
                 ckpt["paa_scales"] = list(args.paa_scales)
             if adapter is not None:
@@ -326,6 +339,8 @@ if __name__ == '__main__':
     parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
     parser.add_argument("--translate_aug_p", type=float, default=0.0, help="EXP-037: prob. of a label-preserving translation (CLIP-mean fill) of a training image and its mask (0 = original behaviour)")
     parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
+    parser.add_argument("--exp042_cls_view", choices=["legacy", "split", "sham"], default="legacy",
+                        help="EXP-042: split uses full-frame CLS and zoomed pixels; sham computes both views but uses zoomed CLS")
     parser.add_argument("--consistency_weight", type=float, default=0.0,
                          help="weight of the scale-consistency loss (0 = off, original behaviour)")
     parser.add_argument("--consistency_batch_size", type=int, default=0,
