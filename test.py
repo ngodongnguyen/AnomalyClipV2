@@ -70,6 +70,7 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
     source_paths = [
         'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
         'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py', 'token_prompt.py',
+        'vvattn_core.py', 'vvattn_stats.py',
     ]
     source_paths.extend(sorted(
         os.path.join('AnomalyCLIP_lib', name)
@@ -89,6 +90,8 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
         'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
         'checkpoint_tok_q': (checkpoint.get('tok_cfg') or {}).get('q', 0),
+        'checkpoint_vv_head_mask_sha256': (checkpoint.get('vv_head_mask') or {}).get('sha256'),
+        'checkpoint_vv_head_mask_keep_sha256': (checkpoint.get('vv_head_mask') or {}).get('keep_sha256'),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -149,6 +152,7 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
     source_paths = [
         'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
         'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py', 'token_prompt.py',
+        'vvattn_core.py', 'vvattn_stats.py',
     ]
     source_paths.extend(sorted(
         os.path.join('AnomalyCLIP_lib', name)
@@ -165,6 +169,8 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
         'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
         'checkpoint_tok_q': (checkpoint.get('tok_cfg') or {}).get('q', 0),
+        'checkpoint_vv_head_mask_sha256': (checkpoint.get('vv_head_mask') or {}).get('sha256'),
+        'checkpoint_vv_head_mask_keep_sha256': (checkpoint.get('vv_head_mask') or {}).get('keep_sha256'),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -238,6 +244,15 @@ def test(args):
     prompt_learner.to(device)
     model.to(device)
     model.visual.DAPM_replace(DPAM_layer = 20)
+
+    # EXP-046: V-V head mask. The checkpoint's own mask is always used when present (a trained checkpoint cannot silently run unmasked);
+    # --vv_head_mask must match it, and is refused for a checkpoint trained without a mask. Default (no flag, no record) = original behaviour.
+    import vvattn_stats
+    vv_keep, _vv_record = vvattn_stats.resolve_test_mask(args.vv_head_mask, checkpoint.get("vv_head_mask"))
+    if vv_keep is not None:
+        import vvattn_core
+        vvattn_core.install_head_mask(model, vv_keep, device)
+        logger.info("V-V head mask active (from checkpoint), sha256 %s, keeps %d/%d heads" % (_vv_record["sha256"], int(vv_keep.sum()), vv_keep.size))
 
     conditioner = None
     if checkpoint.get("extent_cond"):
@@ -587,6 +602,8 @@ if __name__ == '__main__':
                         help="module C: component-gated re-ranking inside the top-10%% pool by distractor mass (pre-registered; all9 only)")
     parser.add_argument("--tok_q", type=int, default=None,
                         help="EXP-044: default (unset) = use the token heads stored in the checkpoint, if any; 0 = ignore them (base map only); >0 must equal the checkpoint's Q")
+    parser.add_argument("--vv_head_mask", type=str, default="",
+                        help="EXP-046: optional check only; the mask is read from the checkpoint. Must equal the checkpoint's stored mask; refused if the checkpoint has none")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     

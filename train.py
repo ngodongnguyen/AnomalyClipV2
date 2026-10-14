@@ -127,6 +127,13 @@ def train(args):
     model.to(device)
     model.visual.DAPM_replace(DPAM_layer = 20)
     ##########################################################################################
+    vv_record = None   # EXP-046: default-off V-V head mask (installed before the first encode_image, so training sees the masked V-V stream)
+    if args.vv_head_mask:
+        import vvattn_core, vvattn_stats
+        vv_keep, vv_sha = vvattn_stats.load_keep(args.vv_head_mask)
+        vv_record = vvattn_stats.mask_record(args.vv_head_mask, vv_keep, vv_sha)
+        vvattn_core.install_head_mask(model, vv_keep, device)
+        logger.info("V-V head mask %s sha256 %s keeps %d/%d heads" % (args.vv_head_mask, vv_sha, vv_record["n_keep"], vv_keep.size))
     conditioner = None
     if args.extent_cond != "none":
         assert args.consistency_weight == 0, "extent conditioning is not combined with the consistency loss"
@@ -379,6 +386,8 @@ def train(args):
             if tok_heads is not None:
                 ckpt["tok_heads"] = tok_heads.state_dict()
                 ckpt["tok_cfg"] = dict(tok_cfg)
+            if vv_record is not None:
+                ckpt["vv_head_mask"] = vv_record
             if static_heads is not None:
                 ckpt["static_heads"] = static_heads.state_dict()
                 ckpt["ec_static_aux"] = True
@@ -445,6 +454,8 @@ if __name__ == '__main__':
     parser.add_argument("--tok_thr", type=float, default=0.2, help="EXP-044: routing sparsification threshold")
     parser.add_argument("--tok_hinge_eta", type=float, default=5.0, help="EXP-044: hinge margin")
     parser.add_argument("--tok_hinge_scale", type=float, default=100.0, help="EXP-044: scale applied to the cosine margin inside the hinge")
+    parser.add_argument("--vv_head_mask", type=str, default="",
+                        help="EXP-046: .npy bool/0-1 mask [19 layers 6..24, 16 heads] of V-V heads kept (empty = off, original behaviour); stored in the checkpoint")
     args = parser.parse_args()
     setup_seed(args.seed)
     train(args)

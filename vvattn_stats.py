@@ -1,6 +1,7 @@
 """Torch-free statistics for EXP-045 (sparse V-V attention and source-selected head subsets).
 numpy/scipy only; unit-tested in test_vvattn_stats.py. The decision rule below is the PRE-REGISTERED one (research/EXPERIMENTS.md EXP-045); do not change it."""
 import hashlib
+import os
 import numpy as np
 from scipy.stats import rankdata
 
@@ -125,3 +126,62 @@ def family_verdict(tables, sigma=4, n_boot=2000):
             res[arm] = {"per_set": per_set, "pass": ok, **det}
     fam_out = {fam: ("ADVANCE" if any(res[a]["pass"] for a in arms) else "CLOSE") for fam, arms in FAMILIES.items()}
     return {"verdict": fam_out, "arms": res}
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# EXP-046: head-mask files for training/testing (torch-free; unit-tested in test_vvattn_stats.py)
+# Layout (same as vvattn_core.head_mask_dict and the EXP-045 masks): keep[i, h], i = 0..18 <-> V-V block (layer) 6+i, h = 0..15, True = head kept.
+MASK_LAYOUT = "keep[i,h]: i=0..18 -> V-V layer 6+i (1-based block index), h=0..15 head, 1 = kept, 0 = V-V head output zeroed before proj"
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def validate_keep(keep):
+    """-> bool array [19,16]; raises ValueError unless the shape is exactly (19, 16) and the values are 0/1 (304 entries)."""
+    a = np.asarray(keep)
+    if a.shape != (N_LAYERS, N_HEADS):
+        raise ValueError(f"head mask must have shape ({N_LAYERS}, {N_HEADS}) = {N_PAIRS} entries, got {a.shape}")
+    if not np.isin(a, (0, 1)).all():
+        raise ValueError("head mask values must be 0/1 or bool")
+    return a.astype(bool)
+
+
+def keep_sha256(keep):
+    return hashlib.sha256(validate_keep(keep).astype(np.uint8).tobytes()).hexdigest()
+
+
+def load_keep(path):
+    """-> (keep bool [19,16], sha256 of the file bytes)."""
+    return validate_keep(np.load(path, allow_pickle=False)), sha256_file(path)
+
+
+def mask_record(path, keep, file_sha):
+    """Plain-python record stored in the checkpoint (lists/ints/str only, loadable with torch.load(weights_only=True))."""
+    keep = validate_keep(keep)
+    return {"path": os.path.abspath(path), "sha256": file_sha, "keep_sha256": keep_sha256(keep), "n_keep": int(keep.sum()),
+            "layout": MASK_LAYOUT, "keep": keep.astype(int).tolist()}
+
+
+def resolve_test_mask(flag_path, ckpt_record):
+    """Mask used at evaluation. Returns (keep or None, record or None).
+    no flag, no record -> (None, None): original behaviour. record only -> the checkpoint's own mask (a trained checkpoint can never silently run unmasked).
+    flag only -> ValueError (the checkpoint was trained without a mask). both -> the file must equal the recorded mask, else ValueError."""
+    if ckpt_record is None:
+        if flag_path:
+            raise ValueError("--vv_head_mask was given but the checkpoint was trained without a V-V head mask")
+        return None, None
+    keep = validate_keep(ckpt_record["keep"])
+    if keep_sha256(keep) != ckpt_record["keep_sha256"]:
+        raise ValueError("checkpoint head-mask record is internally inconsistent (keep_sha256)")
+    if flag_path:
+        fkeep, fsha = load_keep(flag_path)
+        if not np.array_equal(fkeep, keep):
+            raise ValueError(f"--vv_head_mask {flag_path} (sha256 {fsha[:12]}) differs from the mask stored in the checkpoint "
+                             f"(sha256 {ckpt_record['sha256'][:12]}, keep_sha256 {ckpt_record['keep_sha256'][:12]})")
+    return keep, ckpt_record

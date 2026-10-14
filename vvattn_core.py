@@ -1,5 +1,6 @@
 """EXP-045 torch helpers: exact sort-based entmax-1.5, a patched V-V Attention.forward (driver-side monkey patch, restored afterwards), per-head masking
 and the MVTec head-score accumulator. No model code is edited; with the default state the patched forward reproduces Attention.forward exactly."""
+import atexit
 import contextlib
 import numpy as np
 import torch
@@ -129,3 +130,25 @@ class HeadScoreAccumulator:
 
     def numpy(self):
         return self.pos.cpu().numpy(), self.neg.cpu().numpy()
+
+
+def install_head_mask(model, keep, device=None):
+    """EXP-046: install the patched V-V forward with the head mask `keep` (bool [19,16]) for the rest of the process (train.py / test.py).
+    Must be called after model.visual.DAPM_replace and BEFORE the first encode_image. Class-level patch, restored at interpreter exit
+    (or earlier by calling the returned function; idempotent). Only the V-V stream changes, the original Q-K / CLS stream is untouched."""
+    from vvattn_stats import validate_keep
+    keep = validate_keep(keep)
+    if device is None:
+        device = next(model.parameters()).device
+    state = new_state()
+    state["hmask"] = head_mask_dict(keep, device)
+    cm = patched_attention(model, state)
+    cm.__enter__()
+    done = []
+
+    def restore():
+        if not done:
+            done.append(1)
+            cm.__exit__(None, None, None)
+    atexit.register(restore)
+    return restore
