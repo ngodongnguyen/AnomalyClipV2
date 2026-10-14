@@ -16,6 +16,8 @@ from extent_prompt import (ExtentConditioner, TokenAdapter, area_to_z, visual_de
                            batched_similarity)
 from paa import paa_torch
 from zshuffle import derangement_among
+from token_prompt import (TokenHeads, default_cfg, ot_weights, token_probs, token_margin, hinge_loss, ortho_loss,
+                          patch_labels)
 
 
 def roi_resample(feat_map, boxes_norm, out_size):
@@ -81,6 +83,11 @@ def train(args):
                 or args.paa_scales or args.ec_static_aux or args.ec_z_shuffle != "none"):
             raise ValueError("EXP-043 split/sham requires the matched ECP recipe")
     cls_view = args.exp043_ecp_cls_view if args.exp043_ecp_cls_view != "legacy" else args.exp042_cls_view
+    if args.tok_q == 0 and (args.tok_hinge != 0 or args.tok_ortho != 0):
+        raise ValueError("--tok_hinge/--tok_ortho need --tok_q > 0")
+    if args.tok_q > 0 and (args.extent_cond != "extent" or args.paa_scales or args.token_adapter != "none"
+                           or args.ec_static_aux or args.consistency_weight != 0):
+        raise ValueError("EXP-044 token prompts are defined only on top of plain extent-conditioned prompts")
 
     logger = get_logger(args.save_path)
     z_shuffle_rng = np.random.RandomState(args.seed + 1)   # only used with --ec_z_shuffle batch
@@ -133,9 +140,15 @@ def train(args):
     if args.token_adapter != "none":
         assert args.extent_cond == "extent", "the token adapter is only defined on top of the extent-conditioned model"
         adapter = TokenAdapter(rank=args.adapter_rank, z_cond=(args.token_adapter == "z")).to(device)
+    tok_heads, tok_cfg = None, None
+    if args.tok_q > 0:
+        tok_cfg = dict(default_cfg(args.tok_q), eps=args.tok_eps, iters=args.tok_iters, topk=args.tok_topk,
+                       thr=args.tok_thr, eta=args.tok_hinge_eta, hinge_scale=args.tok_hinge_scale)
+        tok_heads = TokenHeads(args.tok_q).to(device)
     params = list(prompt_learner.parameters()) + (list(conditioner.parameters()) if conditioner is not None else []) \
         + (list(static_heads.parameters()) if static_heads is not None else []) \
-        + (list(adapter.parameters()) if adapter is not None else [])
+        + (list(adapter.parameters()) if adapter is not None else []) \
+        + (list(tok_heads.parameters()) if tok_heads is not None else [])
     optimizer = torch.optim.Adam(params, lr=args.learning_rate, betas=(0.5, 0.999))
 
     # losses
@@ -155,6 +168,9 @@ def train(args):
             static_heads.train()
         if adapter is not None:
             adapter.train()
+        if tok_heads is not None:
+            tok_heads.train()
+        tok_hinge_list, tok_ortho_list = [], []
         loss_list = []
         image_loss_list = []
         consistency_loss_list = []
@@ -240,6 +256,12 @@ def train(args):
             image_loss_list.append(image_loss.item())
             #########################################################################
             similarity_map_list = []
+            tok_loss = None   # EXP-044: hinge + orthogonality (stays None, i.e. no change, when --tok_q 0)
+            if tok_heads is not None:
+                tok_sub = tok_heads(text_features)   # [B, Q, 2, C] subspace embeddings of the ECP-shifted text features
+                tok_loss = args.tok_ortho * ortho_loss(tok_sub) if args.tok_ortho != 0 else None
+                tok_ortho_list.append(float(ortho_loss(tok_sub).detach()))
+                tok_hinge_total = 0
             # similarity_map_list.append(similarity_map)
             # --paa_scales (default empty = original behaviour): one extra similarity map per aggregation scale, each
             # supervised like the original map (MoECLIP-style Patch Average Aggregation, parameter-free)
@@ -256,6 +278,20 @@ def train(args):
                             similarity = batched_similarity(patch_feature, text_features)
                         similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size).permute(0, 3, 1, 2)
                         similarity_map_list.append(similarity_map)
+                        if tok_heads is not None:
+                            # EXP-044: OT-routed per-patch map, supervised like the base map (focal + Dice, same weight)
+                            tok_patch = patch_feature[:, 1:, :].float()
+                            tok_w = ot_weights(tok_patch, tok_sub.detach(), tok_cfg)
+                            tok_map = AnomalyCLIP_lib.get_similarity_map(token_probs(tok_patch, tok_sub, tok_w), args.image_size).permute(0, 3, 1, 2)
+                            similarity_map_list.append(tok_map)
+                            if args.tok_hinge != 0:
+                                tok_hinge_total = tok_hinge_total + hinge_loss(
+                                    token_margin(tok_patch, tok_sub, tok_w, tok_cfg["hinge_scale"]),
+                                    patch_labels(gt, tok_patch.shape[1]), tok_cfg["eta"])
+
+            if tok_heads is not None and args.tok_hinge != 0:
+                tok_hinge_list.append(float(tok_hinge_total.detach()))
+                tok_loss = args.tok_hinge * tok_hinge_total if tok_loss is None else tok_loss + args.tok_hinge * tok_hinge_total
 
             loss = 0
             for i in range(len(similarity_map_list)):
@@ -307,7 +343,10 @@ def train(args):
             task_loss = loss + image_loss
             if static_task_loss is not None:
                 task_loss = 0.5 * (task_loss + static_task_loss)
-            (task_loss + args.consistency_weight * consistency_loss + args.ec_weight * extent_loss).backward()
+            total_loss = task_loss + args.consistency_weight * consistency_loss + args.ec_weight * extent_loss
+            if tok_loss is not None:
+                total_loss = total_loss + tok_loss
+            total_loss.backward()
             optimizer.step()
             loss_list.append(loss.item())
         # logs
@@ -316,6 +355,10 @@ def train(args):
                 epoch + 1, args.epoch, np.mean(loss_list), np.mean(image_loss_list),
                 np.mean(consistency_loss_list) if consistency_loss_list else 0.0,
                 np.mean(extent_err_list) if extent_err_list else 0.0))
+            if tok_heads is not None:
+                logger.info('epoch [{}/{}], tok_hinge:{:.4f}, tok_ortho:{:.4f}'.format(
+                    epoch + 1, args.epoch, np.mean(tok_hinge_list) if tok_hinge_list else 0.0,
+                    np.mean(tok_ortho_list) if tok_ortho_list else 0.0))
 
         # save model
         if (epoch + 1) % args.save_freq == 0:
@@ -333,6 +376,9 @@ def train(args):
             if conditioner is not None:
                 ckpt["conditioner"] = conditioner.state_dict()
                 ckpt["extent_cond"] = args.extent_cond
+            if tok_heads is not None:
+                ckpt["tok_heads"] = tok_heads.state_dict()
+                ckpt["tok_cfg"] = dict(tok_cfg)
             if static_heads is not None:
                 ckpt["static_heads"] = static_heads.state_dict()
                 ckpt["ec_static_aux"] = True
@@ -389,6 +435,16 @@ if __name__ == '__main__':
                          help="prob. of conditioning on the ground-truth extent (anomalous images) instead of the estimate")
     parser.add_argument("--ec_static_aux", action="store_true",
                         help="train source-only static image/pixel prompts alongside ECP; use static prompts at test")
+    parser.add_argument("--tok_q", type=int, default=0,
+                        help="EXP-044: number of TokenCLIP-style prompt subspaces (0 = off, original behaviour; 3 = TOK, 1 = TOKQ1 control)")
+    parser.add_argument("--tok_hinge", type=float, default=0.0, help="EXP-044: weight of the token hinge loss (0 = off)")
+    parser.add_argument("--tok_ortho", type=float, default=0.0, help="EXP-044: weight of the subspace Gram orthogonality penalty (0 = off)")
+    parser.add_argument("--tok_eps", type=float, default=0.01, help="EXP-044: Sinkhorn entropic regularisation")
+    parser.add_argument("--tok_iters", type=int, default=100, help="EXP-044: Sinkhorn iterations")
+    parser.add_argument("--tok_topk", type=int, default=2, help="EXP-044: routing sparsification, entries kept per patch")
+    parser.add_argument("--tok_thr", type=float, default=0.2, help="EXP-044: routing sparsification threshold")
+    parser.add_argument("--tok_hinge_eta", type=float, default=5.0, help="EXP-044: hinge margin")
+    parser.add_argument("--tok_hinge_scale", type=float, default=100.0, help="EXP-044: scale applied to the cosine margin inside the hinge")
     args = parser.parse_args()
     setup_seed(args.seed)
     train(args)

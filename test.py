@@ -26,6 +26,7 @@ from sklearn.metrics import roc_auc_score
 from prompt_ensemble import tokenize
 from distractor_stats import LESION, DISTRACT, PRUNED, rerank_pool
 from paa import paa_torch
+from token_prompt import TokenHeads, ot_weights, token_probs
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -68,7 +69,7 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
     code_root = os.path.dirname(os.path.abspath(__file__))
     source_paths = [
         'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
-        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py',
+        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py', 'token_prompt.py',
     ]
     source_paths.extend(sorted(
         os.path.join('AnomalyCLIP_lib', name)
@@ -87,6 +88,7 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
         'checkpoint_sha256': _sha256_file(args.checkpoint_path),
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
         'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
+        'checkpoint_tok_q': (checkpoint.get('tok_cfg') or {}).get('q', 0),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -146,7 +148,7 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
     code_root = os.path.dirname(os.path.abspath(__file__))
     source_paths = [
         'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
-        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py',
+        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py', 'token_prompt.py',
     ]
     source_paths.extend(sorted(
         os.path.join('AnomalyCLIP_lib', name)
@@ -162,6 +164,7 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
         'checkpoint_sha256': _sha256_file(args.checkpoint_path),
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
         'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
+        'checkpoint_tok_q': (checkpoint.get('tok_cfg') or {}).get('q', 0),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -256,6 +259,19 @@ def test(args):
         adapter = TokenAdapter(**checkpoint["token_adapter_cfg"]).to(device)
         adapter.load_state_dict(checkpoint["token_adapter"])
         adapter.eval()
+
+    # EXP-044: TokenCLIP-style routed map. None = original behaviour. The checkpoint's own cfg is used; --tok_q 0 forces it off.
+    tok_heads, tok_cfg = None, None
+    if args.tok_q is not None and args.tok_q != 0 and not checkpoint.get("tok_heads"):
+        raise ValueError("--tok_q %d requested but the checkpoint has no token heads" % args.tok_q)
+    if checkpoint.get("tok_heads") and args.tok_q != 0:
+        tok_cfg = checkpoint["tok_cfg"]
+        assert args.tok_q is None or args.tok_q == tok_cfg["q"], "--tok_q differs from the checkpoint's Q"
+        assert adapter is None and static_heads is None and not args.paa_scales, "token prompts are not combined with other modules"
+        assert conditioner is not None and conditioner.mode == "extent", "token prompts are defined on top of ECP"
+        tok_heads = TokenHeads(tok_cfg["q"]).to(device)
+        tok_heads.load_state_dict(checkpoint["tok_heads"])
+        tok_heads.eval()
 
     prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
     text_features_base = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
@@ -356,6 +372,7 @@ def test(args):
             if not need_pixel and not args.exp039_pool_scores:
                 continue
             anomaly_map_list = []; d_list = []
+            tok_sub = tok_heads(text_features_pix) if tok_heads is not None else None
             for idx, raw_patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
                     # --paa_scales (default empty = original behaviour): mean over the per-scale anomaly maps of this layer
@@ -369,6 +386,11 @@ def test(args):
                         similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
                         scale_maps.append((similarity_map[...,1] + 1 - similarity_map[...,0])/2.0)
                     anomaly_map = scale_maps[0] if len(scale_maps) == 1 else torch.stack(scale_maps).mean(0)
+                    if tok_heads is not None:
+                        # EXP-044: pixel map = mean of the OT-routed map and the base map (image head unchanged)
+                        tok_patch = patch_feature[:, 1:, :].float()
+                        tok_m = AnomalyCLIP_lib.get_similarity_map(token_probs(tok_patch, tok_sub, ot_weights(tok_patch, tok_sub, tok_cfg)), args.image_size)
+                        anomaly_map = 0.5 * (anomaly_map + (tok_m[..., 1] + 1 - tok_m[..., 0]) / 2.0)
                     if dist_T is not None:
                         pr = (100.0 * patch_feature[:, 1:, :].float() @ dist_T.T).softmax(-1)
                         d = pr[..., dist_mask].sum(-1, keepdim=True)  # [1, N, 1]
@@ -563,6 +585,8 @@ if __name__ == '__main__':
                         help="pixel-head test-time suppression by raw-CLIP distractor-concept mass (all9 = pre-registered A, pruned = B, held-out only)")
     parser.add_argument("--distractor_rerank", choices=['none', 'all9', 'pruned'], default='none',
                         help="module C: component-gated re-ranking inside the top-10%% pool by distractor mass (pre-registered; all9 only)")
+    parser.add_argument("--tok_q", type=int, default=None,
+                        help="EXP-044: default (unset) = use the token heads stored in the checkpoint, if any; 0 = ignore them (base map only); >0 must equal the checkpoint's Q")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     
