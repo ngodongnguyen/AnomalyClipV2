@@ -6,11 +6,17 @@ Rule, arms, region, statistics: research/EXPERIMENTS.md EXP-048.  Statistics: pe
   python analyze_pe_shift.py smoke --name ClinicDB ...      # = pixel with --limit 8 random kept images, out_dir results/EXP-048/smoke
   python analyze_pe_shift.py report --report_dir results/EXP-048   # no torch
 One dataset per command, resumable (an existing output CSV is skipped unless --redo).
+EXP-049 (H038): the same diagnostic for other checkpoints.  --checkpoint PATH, --tag NAME (outputs under results/EXP-049/<tag>/<set>/; no tag = EXP-048 paths),
+--sets (subset; pixel: skip a set not listed, report: only these).  A checkpoint WITHOUT a conditioner (extent_cond none: CTRL, ZO) is detected automatically: z flags do not
+apply and the text features come from the prompt learner only, exactly as test.py (conditioner None).  With --tag in RECORDED_POOLED_CLINICDB, the ClinicDB run first does a
+pooled-AUROC parity pass over ALL kept ClinicDB images (unmodified SHAM map, sigma 4) and STOPs if it differs from the recorded value by more than 0.15 point.
 Peripheral tercile (EXP-033 c): SHAM, PE_REC, PE_RAND, IMG_REC, IMG_RAND, PE_FLAT (6 forwards).  Central tercile: SHAM, PE_REC (2 forwards).
 Everything is scored with per-image AUROC on the SAME pixel set (common valid region).  STOP: SHAM full-image AUROC vs EXP-012 reference > 1e-4.
 """
 import os
 import csv
+import json
+import hashlib
 import time
 import argparse
 import numpy as np
@@ -21,6 +27,11 @@ import pe_shift_stats as S
 import zpos_stats as Z
 
 SETS = ["ClinicDB", "ColonDB", "Endo", "Kvasir", "TN3K", "ISIC"]
+# EXP-049 pooled pixel AUROC (%) on ClinicDB at sigma 4, fixed z_pix 1.6 where there is a conditioner (one decimal as recorded; tolerance 0.15 point).
+# Sources: ECP s111 EXP-012/EXP-048 (88.3), ECP s222/s333 and ZO s111/s222/s333 EXP-024 (research/EXPERIMENTS.md), CTRL s111/s222/s333 EXP-030 (exp030.txt).
+RECORDED_POOLED_CLINICDB = {"ecp_s111": 88.3, "ecp_s222": 87.6, "ecp_s333": 87.2,
+                            "zo_s111": 84.7, "zo_s222": 84.9, "zo_s333": 83.9,
+                            "ctrl_s111": 82.6, "ctrl_s222": 83.0, "ctrl_s333": 81.8}
 ARMS = ["sham", "pe_rec", "pe_rand", "img_rec", "img_rand", "pe_flat"]
 COLS = ["id", "group", "c", "ci", "cj", "sy_rec", "sx_rec", "sy_rand", "sx_rand", "n_les_reg", "n_bg_reg", "status",
         "auroc_full_sham", "auroc_ref"] + ["auroc_" + a for a in ARMS]
@@ -36,6 +47,8 @@ def stage_pixel(args):
     from analyze_badcases import load_model, read_mask
     import pe_shift_core as C
 
+    if args.sets and args.name not in args.sets:
+        print(f"{args.name}: not in --sets {args.sets}, skipped"); return
     out_dir = os.path.join(args.out_dir, args.name)
     out_csv = os.path.join(out_dir, f"pe_{args.name}.csv")
     if os.path.exists(out_csv) and not args.redo:
@@ -47,8 +60,17 @@ def stage_pixel(args):
     if Sz != S.SIDE * S.PATCH:
         raise SystemExit(f"STOP: image size {Sz} != {S.SIDE}*{S.PATCH}")
     device, model, pl, cond = load_model(args)
-    if cond is None or cond.mode != "extent":
-        raise SystemExit("STOP: this diagnostic needs the 'extent' ECP checkpoint (z override)")
+    if cond is not None and cond.mode != "extent":
+        raise SystemExit(f"STOP: conditioner mode '{cond.mode}' is not supported (need 'extent' ECP or no conditioner)")
+    print(f"[stage] checkpoint {args.checkpoint_path}: " + ("ECP 'extent' conditioner (z_pix override %.2f)" % args.z_pix if cond is not None
+          else "NO conditioner (static prompts from the prompt learner, as test.py); z flags ignored"))
+    tf_static = None
+    if cond is None:                                              # test.py: text_features_base, computed once (it does not depend on the image)
+        with torch.no_grad():
+            prompts, tokenized_prompts, compound_prompts_text = pl(cls_id=None)
+            tf_static = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
+            tf_static = torch.stack(torch.chunk(tf_static, dim=0, chunks=2), dim=1)
+            tf_static = tf_static / tf_static.norm(dim=-1, keepdim=True)
     preprocess, target_transform = get_transform(args)
     data = Dataset(root=args.data_path, transform=preprocess, target_transform=target_transform, dataset_name=args.dataset)
     ref = None
@@ -94,10 +116,13 @@ def stage_pixel(args):
                 imf, pf = model.encode_image(img.unsqueeze(0), [24], DPAM_layer=20)
                 imf = imf / imf.norm(dim=-1, keepdim=True)
                 pfeat = pf[0] / pf[0].norm(dim=-1, keepdim=True)
-                desc = visual_descriptor(imf, pf)
-                zt = torch.full((imf.shape[0],), args.z_pix, device=device)
-                _, c_pos, c_neg = cond(desc, z_override=zt)
-                tf = conditioned_text_features(model, pl, c_pos, c_neg)
+                if cond is None:
+                    tf = tf_static
+                else:
+                    desc = visual_descriptor(imf, pf)
+                    zt = torch.full((imf.shape[0],), args.z_pix, device=device)
+                    _, c_pos, c_neg = cond(desc, z_override=zt)
+                    tf = conditioned_text_features(model, pl, c_pos, c_neg)
                 sim, _ = AnomalyCLIP_lib.compute_similarity(pfeat, tf[0])
                 sm = AnomalyCLIP_lib.get_similarity_map(sim[:, 1:, :], Sz)
                 return ((sm[..., 1] + 1 - sm[..., 0]) / 2.0)[0].float().cpu()
@@ -122,6 +147,37 @@ def stage_pixel(args):
         if y1 > y0 and x1 > x0:
             out[:, y0 + dy:y1 + dy, x0 + dx:x1 + dx] = img[:, y0:y1, x0:x1]
         return out
+
+    # EXP-049 pooled-AUROC parity on ALL kept ClinicDB images (unmodified SHAM map, sigma 4); STOP before any other work when it fails (a --limit run is informational only)
+    pooled_info = None
+    want_pooled = args.pooled_parity != "off" and args.name == "ClinicDB" and bool(args.tag or args.pooled_parity == "on")
+    if want_pooled:
+        if args.tag not in RECORDED_POOLED_CLINICDB:
+            raise SystemExit(f"STOP: no recorded pooled ClinicDB AUROC for tag '{args.tag}' (known: {sorted(RECORDED_POOLED_CLINICDB)}); use --pooled_parity off to skip")
+        t1 = time.time()
+        Np = len(kept)
+        pm = np.empty((Np, Sz, Sz), np.float32)
+        pg = np.empty((Np, Sz, Sz), np.uint8)
+        for n, i in enumerate(kept):
+            itp = data[int(i)]
+            pg[n] = read_mask(itp)
+            pm[n] = score_map(itp["img"].to(device))
+            if (n + 1) % 100 == 0:
+                print(f"[pooled parity] {n + 1}/{Np} ({time.time() - t1:.0f}s)", flush=True)
+        pooled = float(roc_auc_lowmem(pg, pm))
+        del pm, pg
+        rec = RECORDED_POOLED_CLINICDB[args.tag]
+        diff, ok = S.pooled_parity(pooled, rec)
+        limited = bool(args.limit)
+        print(f"[parity] pooled ClinicDB AUROC (unmodified SHAM, sigma {args.sigma}, {Np} images{', LIMITED subset: informational only' if limited else ''}) = {pooled * 100:.3f}; "
+              f"recorded {rec} ({args.tag}); |diff| = {diff:.3f} point (tol {S.POOLED_TOL_PTS}); {'OK' if ok else 'EXCEEDED'}  [{time.time() - t1:.0f}s]")
+        pooled_info = dict(tag=args.tag, n_images=Np, pooled_auroc_pct=pooled * 100, recorded_pct=rec, abs_diff_pts=diff, tol_pts=S.POOLED_TOL_PTS, limited=limited, ok=ok)
+        os.makedirs(out_dir, exist_ok=True)
+        json.dump(pooled_info, open(os.path.join(out_dir, "pooled_parity.json"), "w"), indent=1)
+        if not ok and not limited:
+            raise SystemExit(f"STOP: pooled ClinicDB AUROC {pooled * 100:.3f} vs recorded {rec} (> {S.POOLED_TOL_PTS} point): wrong checkpoint, or the load path differs from test.py")
+    elif args.name == "ClinicDB" and args.tag:
+        print("[parity] pooled ClinicDB parity NOT run (--pooled_parity off)")
 
     rows, max_ref, max_impl, n_drop, n_zero = [], 0.0, 0.0, 0, 0
     t0 = time.time()
@@ -179,6 +235,10 @@ def stage_pixel(args):
             w.writerow([r[k] for k in COLS])
     os.replace(tmp, out_csv)
     print(f"wrote {out_csv}")
+    with open(os.path.join(out_dir, f"meta_{args.name}.json"), "w") as f:
+        json.dump(dict(checkpoint=args.checkpoint_path, sha256=hashlib.sha256(open(args.checkpoint_path, "rb").read()).hexdigest(), tag=args.tag,
+                       conditioner=(cond.mode if cond is not None else None), limit=args.limit, n_rows=len(rows), n_forwarded=n_fw,
+                       reference_csv=args.reference_csv, max_ref_err=max_ref if ref is not None else None, pooled_parity=pooled_info), f, indent=1)
     report_set(rows, args.name, args.boot)
     print(f"[wall] {args.name} {time.time() - T0:.0f}s")
 
@@ -235,7 +295,7 @@ def report_set(rows, name, boot):
 
 def stage_report(args):
     res = {}
-    for s in SETS:
+    for s in (args.sets or SETS):
         p = os.path.join(args.report_dir, s, f"pe_{s}.csv")
         if not os.path.isfile(p):
             print(f"MISSING {p}"); continue
@@ -260,8 +320,11 @@ if __name__ == "__main__":
     ap.add_argument("--dataset", default="colon")
     ap.add_argument("--reference_csv", default=None, help="EXP-012 pixel_per_image_predictions.csv (SHAM parity, tol 1e-4)")
     ap.add_argument("--position_dir", default="results/EXP-032", help="holds <set>/position_<set>.csv (optional cross-check of c)")
-    ap.add_argument("--out_dir", default="results/EXP-048")
-    ap.add_argument("--report_dir", default="results/EXP-048")
+    ap.add_argument("--out_dir", default=None, help="default results/EXP-049/<tag> with --tag, else results/EXP-048")
+    ap.add_argument("--report_dir", default=None, help="default as --out_dir")
+    ap.add_argument("--tag", default=None, help="EXP-049 checkpoint tag (ecp_s222, ctrl_s111, zo_s333, ...): output folder and recorded pooled value")
+    ap.add_argument("--sets", nargs="+", default=None, help="subset of ClinicDB ColonDB Endo Kvasir TN3K ISIC (pixel: other sets are skipped; report: only these are read)")
+    ap.add_argument("--pooled_parity", choices=("auto", "on", "off"), default="auto", help="ClinicDB pooled-AUROC parity pass; auto = on when --tag is given")
     ap.add_argument("--boot", type=int, default=2000)
     ap.add_argument("--redo", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
@@ -273,6 +336,9 @@ if __name__ == "__main__":
     ap.add_argument("--n_ctx", type=int, default=12)
     ap.add_argument("--t_n_ctx", type=int, default=4)
     a = ap.parse_args()
+    default_dir = f"results/EXP-049/{a.tag}" if a.tag else "results/EXP-048"
+    a.out_dir = a.out_dir or default_dir
+    a.report_dir = a.report_dir or default_dir
     if a.mode == "smoke":
         a.limit = a.limit or 8
     {"pixel": stage_pixel, "smoke": stage_pixel, "report": stage_report}[a.mode](a)

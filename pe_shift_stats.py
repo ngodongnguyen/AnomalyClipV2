@@ -106,3 +106,13 @@ def verdict(sets, decision=DECISION):
     if nno >= 2:
         return "NOT PE-MEDIATED", nv, npe, nno
     return "MIXED", nv, npe, nno
+
+
+# ------------------------------------------------------------------ EXP-049 additions (do not touch anything above; EXP-048 results were produced without them)
+POOLED_TOL_PTS = 0.15
+
+
+def pooled_parity(pooled_frac, recorded_pct, tol=POOLED_TOL_PTS):
+    """Pooled pixel AUROC (fraction) vs the recorded one-decimal value (percent). -> (|difference| in points, ok). ok iff the difference is <= tol (rounded to 1e-9)."""
+    d = abs(float(pooled_frac) * 100.0 - float(recorded_pct))
+    return d, bool(np.isfinite(d) and round(d, 9) <= tol)
