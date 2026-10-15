@@ -82,6 +82,8 @@ def train(args):
                 or args.consistency_weight != 0 or args.token_adapter != "none"
                 or args.paa_scales or args.ec_static_aux or args.ec_z_shuffle != "none"):
             raise ValueError("EXP-043 split/sham requires the matched ECP recipe")
+    if args.zoom_place != "uniform" and (args.zoom_aug_p <= 0 or args.translate_aug_p != 0):
+        raise ValueError("EXP-051 --zoom_place beta needs zoom augmentation (--zoom_aug_p > 0) and no translation augmentation")
     cls_view = args.exp043_ecp_cls_view if args.exp043_ecp_cls_view != "legacy" else args.exp042_cls_view
     if args.tok_q == 0 and (args.tok_hinge != 0 or args.tok_ortho != 0):
         raise ValueError("--tok_hinge/--tok_ortho need --tok_q > 0")
@@ -100,7 +102,8 @@ def train(args):
     model, _ = AnomalyCLIP_lib.load("ViT-L/14@336px", device=device, design_details = AnomalyCLIP_parameters)
     model.eval()
 
-    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p, translate_aug_p=args.translate_aug_p, return_original=cls_view != "legacy")
+    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p, translate_aug_p=args.translate_aug_p, return_original=cls_view != "legacy",
+                         zoom_place=args.zoom_place, zoom_beta=args.zoom_beta)
     train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
 
     consistency_loader, consistency_iter = None, None
@@ -420,6 +423,9 @@ if __name__ == '__main__':
     parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
     parser.add_argument("--translate_aug_p", type=float, default=0.0, help="EXP-037: prob. of a label-preserving translation (CLIP-mean fill) of a training image and its mask (0 = original behaviour)")
     parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
+    parser.add_argument("--zoom_place", choices=["uniform", "beta"], default="uniform",
+                        help="EXP-051: anomaly placement inside a zoom crop; uniform = original, beta = crop corner ~ Beta(zoom_beta, zoom_beta) over the admissible range")
+    parser.add_argument("--zoom_beta", type=float, default=1.0, help="EXP-051: Beta parameter of --zoom_place beta (< 1 pushes the anomaly toward the crop edges)")
     parser.add_argument("--exp042_cls_view", choices=["legacy", "split", "sham"], default="legacy",
                         help="EXP-042: split uses full-frame CLS and zoomed pixels; sham computes both views but uses zoomed CLS")
     parser.add_argument("--exp043_ecp_cls_view", choices=["legacy", "split", "sham"], default="legacy",

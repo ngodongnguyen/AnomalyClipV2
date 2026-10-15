@@ -5,6 +5,7 @@ Rule and thresholds: notes/EXP-050_registration.md (to be copied into research/E
   python analyze_centre_prior.py source --data_root $MVTEC [--limit N]     # Part A, CPU only, no torch, no model: exact training crop code on MVTec masks
   python analyze_centre_prior.py zreport                                     # Part B report, no torch: EXP-048/049 (z_pix 1.6) vs results/EXP-050/zlow (z_pix -0.69)
   python analyze_centre_prior.py report                                      # both verdicts
+  python analyze_centre_prior.py sweep --data_root $MVTEC                    # EXP-051: source-only choice of the Beta placement parameter (CPU)
 Part B per-image CSVs are produced by analyze_pe_shift.py itself (unchanged) with --z_pix -0.69; see scripts/run_exp050.sh.
 """
 import os
@@ -131,6 +132,83 @@ def print_part_a(res):
     print(f"PART A VERDICT: {res['verdict']}" + (f"   ({res['verdict_note']})" if res.get("verdict_note") else ""))
 
 
+# ------------------------------------------------------------------ EXP-051 source sweep of the zoom placement
+BETA_GRID = (0.7, 0.5, 0.35, 0.25, 0.15, 0.1, 0.05)        # fixed before the sweep (notes/EXP-051_registration.md); largest first
+
+
+def select_beta(results, grid=BETA_GRID):
+    """results: {a: part_a stats}. Registered rule: the LARGEST a of the grid (mildest change from uniform) whose zoomed training mixture is no longer
+    centralised or size-centre coupled relative to the native frames: A1 >= -0.02 and A2 >= -0.03 (point estimates, rounded to 1e-10).
+    Returns a or None (no admissible a in the grid -> no training)."""
+    for a in sorted(grid, reverse=True):
+        st = results.get(a)
+        if st is not None and round(st["A1"], 10) >= S.A1_NOT and round(st["A2"], 10) >= S.A2_NOT:
+            return a
+    return None
+
+
+def source_masks(args):
+    """-> (rows, generator factory). Same selection and order as Part A / the EXP-040 audit."""
+    from PIL import Image
+    meta = json.load(open(os.path.join(args.data_root, "meta.json")))
+    if set(meta["test"]) != set(CATEGORIES):
+        raise SystemExit("STOP: MVTec category list differs from the EXP-040 list")
+    rows = [(cat, r) for cat in CATEGORIES for r in meta["test"][cat] if int(r["anomaly"]) == 1]
+    if args.limit:
+        rows = rows[: args.limit]
+
+    def gen():
+        for cat, r in rows:
+            with Image.open(os.path.join(args.data_root, r["img_path"])) as im:
+                size = im.size
+            with Image.open(os.path.join(args.data_root, r["mask_path"])) as mi:
+                if mi.size != size:
+                    continue
+                yield np.asarray(mi.convert("L")) > 0
+    return rows, gen
+
+
+def stage_sweep(args):
+    out = args.sweep_dir
+    os.makedirs(out, exist_ok=True)
+    js = os.path.join(out, "selection.json")
+    if os.path.exists(js) and not args.redo:
+        print(f"{js} exists, skipped (use --redo)"); print(open(js).read()); return
+    rows, gen = source_masks(args)
+    res, tab = {}, []
+    for place, a in [("uniform", 1.0)] + [("beta", b) for b in BETA_GRID]:
+        f_box, box_sha = S.load_crop_box(args.dataset_py, place=place, beta=a)
+        t0 = time.time()
+        random.seed(args.seed)
+        v = S.simulate_visits(gen(), lambda m: f_box(m, tuple(args.target)), epochs=args.epochs, p=args.p)
+        st = S.part_a(v, n_boot=args.boot)
+        zz = v["z"][v["zoomed"]]
+        row = dict(place=place, a=a, attempts=v["n_attempts"], success=v["n_success"], A1=st["A1"], A1_ci=st["A1_ci"], A2=st["A2"], A2_ci=st["A2_ci"],
+                   a1_label=S.a1_label(st), a2_label=S.a2_label(st), c_zoomed=st["c_zoomed_mean"], c_native=st["c_native_mean"],
+                   rho_mix=st["rho_mix"], rho_native=st["rho_native"], z_zoomed_mean=float(zz.mean()) if len(zz) else None, seconds=time.time() - t0)
+        tab.append(row)
+        if place == "uniform":
+            ok = (v["n_attempts"], v["n_success"]) == (EXP040_ATTEMPTS, EXP040_SUCCESS)
+            print(f"[parity] uniform placement: attempts / successes {v['n_attempts']} / {v['n_success']} vs EXP-040 {EXP040_ATTEMPTS} / {EXP040_SUCCESS}: "
+                  + ("MATCH" if ok else ("not compared (--limit)" if args.limit else "MISMATCH")))
+            if not ok and not args.limit and not args.no_exp040_parity:
+                raise SystemExit("STOP: the uniform crop stream differs from the EXP-040 audit")
+        else:
+            res[a] = st
+        print(f"  {place:7s} a={a:<5}  A1 {st['A1']:+.4f} [{st['A1_ci'][0]:+.4f}, {st['A1_ci'][1]:+.4f}] {row['a1_label']:18s}  "
+              f"A2 {st['A2']:+.4f} [{st['A2_ci'][0]:+.4f}, {st['A2_ci'][1]:+.4f}] {row['a2_label']:12s}  mean c zoomed {st['c_zoomed_mean']:.3f} (native {st['c_native_mean']:.3f})  "
+              f"mean z zoomed {row['z_zoomed_mean']:.3f}  ({row['seconds']:.0f}s)", flush=True)
+    a = select_beta(res)
+    sel = dict(experiment="EXP-051 source sweep", rule="largest a in the grid with A1 >= -0.02 and A2 >= -0.03", grid=list(BETA_GRID), selected_beta=a,
+               limit=args.limit, seed=args.seed, epochs=args.epochs, p=args.p, target=list(args.target),
+               dataset_py_sha256=sha256_file(args.dataset_py), crop_box_source_sha256=box_sha, table=tab)
+    if args.limit:
+        sel["note"] = "LIMITED subset (smoke): not the registered selection"
+    json.dump(sel, open(js, "w"), indent=1)
+    print(f"SELECTED zoom_beta = {a}" if a is not None else "NO ADMISSIBLE a in the grid: Step 2 training is NOT authorised (report and stop)")
+    print(f"wrote {js}")
+
+
 # ------------------------------------------------------------------ Part B
 def hi_dir(tag, args):
     return args.exp048 if tag == "ecp_s111" else os.path.join(args.exp049, tag)
@@ -203,7 +281,7 @@ def stage_report(args):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("source", "zreport", "report"))
+    ap.add_argument("mode", choices=("source", "zreport", "report", "sweep"))
     ap.add_argument("--data_root", help="MVTec root holding meta.json (Part A)")
     ap.add_argument("--dataset_py", default="dataset.py")
     ap.add_argument("--out_dir", default="results/EXP-050/source")
@@ -216,9 +294,10 @@ if __name__ == "__main__":
     ap.add_argument("--target", type=float, nargs=2, default=(0.10, 0.45))
     ap.add_argument("--limit", type=int, default=0, help="first N anomalous images only (smoke; parity and verdict not registered)")
     ap.add_argument("--boot", type=int, default=2000)
+    ap.add_argument("--sweep_dir", default="results/EXP-051/sweep")
     ap.add_argument("--redo", action="store_true")
     ap.add_argument("--no_exp040_parity", action="store_true")
     a = ap.parse_args()
-    if a.mode == "source" and not a.data_root:
-        ap.error("source needs --data_root")
-    {"source": stage_source, "zreport": stage_zreport, "report": stage_report}[a.mode](a)
+    if a.mode in ("source", "sweep") and not a.data_root:
+        ap.error(f"{a.mode} needs --data_root")
+    {"source": stage_source, "zreport": stage_zreport, "report": stage_report, "sweep": stage_sweep}[a.mode](a)

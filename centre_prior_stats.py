@@ -81,9 +81,10 @@ def simulate_visits(masks, sample_box, epochs=15, p=0.5, rand=None):
                 z_native=np.array(zn), c_native=np.array(cn), n_attempts=n_att, n_success=n_ok)
 
 
-def load_crop_box(dataset_py="dataset.py"):
+def load_crop_box(dataset_py="dataset.py", place="uniform", beta=1.0):
     """Dataset._sample_crop_box, compiled from the source of dataset.py itself (so the exact training code runs without importing torch).
-    Returns (f, sha256 of the function source); f(mask, target_range) -> box or None, drawing from the global `random` module as in training."""
+    Returns (f, sha256 of the function source); f(mask, target_range) -> box or None, drawing from the global `random` module as in training.
+    place / beta = the EXP-051 placement attributes of the Dataset instance ('uniform' = original behaviour)."""
     import ast
     import hashlib
     import random as _random
@@ -100,10 +101,11 @@ def load_crop_box(dataset_py="dataset.py"):
     ns = {"np": np, "random": _random}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), dataset_py, "exec"), ns)
     raw = ns["_sample_crop_box"]
+    owner = SimpleNamespace(zoom_place=place, zoom_beta=beta)
 
     def f(mask, target_range):
         m = np.asarray(mask, bool)
-        return raw(None, SimpleNamespace(size=(m.shape[1], m.shape[0])), m, target_range)
+        return raw(owner, SimpleNamespace(size=(m.shape[1], m.shape[0])), m, target_range)
     return f, hashlib.sha256(code.encode()).hexdigest()
 
 

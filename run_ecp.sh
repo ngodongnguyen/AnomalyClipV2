@@ -192,6 +192,10 @@ case "$1" in
   smoke_head)     ZOOM=0.5; TRAIN_EXTRA="--vv_head_mask ./results/EXP-046/head50_mask.npy" train head_smoke extent 1 ;;
   train_m_head50) ZOOM=0.5; TRAIN_EXTRA="--vv_head_mask ./results/EXP-046/head50_mask.npy" train matched_head50_s111 extent 15 111 ;;
   train_m_rand50) ZOOM=0.5; TRAIN_EXTRA="--vv_head_mask ./results/EXP-046/rand50_s0_mask.npy" train matched_rand50_s111 extent 15 111 ;;
+  # EXP-051: position-debiased zoom = matched ECP recipe with the zoom crop corner drawn from Beta(a, a) (a from results/EXP-051/sweep/selection.json)
+  #   bash run_ecp.sh smoke_eb A | train_m_eb SEED A
+  smoke_eb)       ZOOM=0.5; TRAIN_EXTRA="--zoom_place beta --zoom_beta $2" train eb_smoke extent 1 ;;
+  train_m_eb)     ZOOM=0.5; TRAIN_EXTRA="--zoom_place beta --zoom_beta $3" train matched_eb_s$2 extent 15 $2 ;;
   # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
   #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
   fixed_ckpt)
@@ -218,5 +222,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_va|train_va_z|train_va_const|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|train_m_tr SEED|smoke_tr|train_m_ctrl SEED|smoke_ctrl|train_m_shuf SEED|train_m_latent SEED|smoke_shuf|smoke_latent|smoke_tok|train_m_tok|train_m_tokq1|smoke_head|train_m_head50|train_m_rand50|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_va|train_va_z|train_va_const|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|train_m_tr SEED|smoke_tr|train_m_ctrl SEED|smoke_ctrl|train_m_shuf SEED|train_m_latent SEED|smoke_shuf|smoke_latent|smoke_tok|train_m_tok|train_m_tokq1|smoke_head|train_m_head50|train_m_rand50|smoke_eb A|train_m_eb SEED A|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
 esac

@@ -40,8 +40,16 @@ def generate_class_info(dataset_name):
     return obj_list, class_name_map_class_id
 
 class Dataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45), translate_aug_p=0.0, return_original=False):
+    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45), translate_aug_p=0.0, return_original=False,
+                 zoom_place='uniform', zoom_beta=1.0):
         self.root = root
+        # EXP-051: where the anomaly sits inside a zoom crop. 'uniform' (default) = original behaviour, the crop corner is uniform over the admissible range;
+        # 'beta' = corner drawn from Beta(zoom_beta, zoom_beta) over the same range (zoom_beta < 1 pushes the anomaly toward the crop edges; the crop still
+        # contains the whole anomaly, so the extent label is unchanged)
+        if zoom_place not in ('uniform', 'beta') or not zoom_beta > 0:
+            raise ValueError(f"bad zoom placement {zoom_place!r} / beta {zoom_beta}")
+        self.zoom_place = zoom_place
+        self.zoom_beta = zoom_beta
         self.return_original = return_original
         self.translate_aug_p = translate_aug_p     # EXP-037, default 0 = original behaviour
         self.zoom_aug_p = zoom_aug_p
@@ -79,7 +87,12 @@ class Dataset(data.Dataset):
         lo_y, hi_y = max(0, y1 - side), min(y0, H - side)
         if lo_x > hi_x or lo_y > hi_y:
             return None
-        cx, cy = random.randint(lo_x, hi_x), random.randint(lo_y, hi_y)
+        if getattr(self, 'zoom_place', 'uniform') == 'uniform':      # original draw sequence, unchanged
+            cx, cy = random.randint(lo_x, hi_x), random.randint(lo_y, hi_y)
+        else:                                                          # EXP-051 'beta' placement
+            a = self.zoom_beta
+            cx = lo_x + int(round(random.betavariate(a, a) * (hi_x - lo_x)))
+            cy = lo_y + int(round(random.betavariate(a, a) * (hi_y - lo_y)))
         return (cx, cy, cx + side, cy + side)
 
     def _zoom_around_anomaly(self, img, img_mask):
