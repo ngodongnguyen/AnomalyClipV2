@@ -26,9 +26,6 @@ def setup_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 def train(args):
-    if args.zoom_place != "uniform" and args.zoom_aug_p <= 0:
-        raise ValueError("EXP-051 --zoom_place beta needs zoom augmentation (--zoom_aug_p > 0)")
-
     logger = get_logger(args.save_path)
     z_shuffle_rng = np.random.RandomState(args.seed + 1)   # only used with --ec_z_shuffle batch
 
@@ -40,8 +37,7 @@ def train(args):
     model, _ = AnomalyCLIP_lib.load("ViT-L/14@336px", device=device, design_details = AnomalyCLIP_parameters)
     model.eval()
 
-    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p,
-                         zoom_place=args.zoom_place, zoom_beta=args.zoom_beta)
+    train_data = Dataset(root=args.train_data_path, transform=preprocess, target_transform=target_transform, dataset_name = args.dataset, zoom_aug_p=args.zoom_aug_p)
     train_dataloader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True)
 
   ##########################################################################################
@@ -191,9 +187,6 @@ if __name__ == '__main__':
     parser.add_argument("--save_freq", type=int, default=1, help="save frequency")
     parser.add_argument("--seed", type=int, default=111, help="random seed")
     parser.add_argument("--zoom_aug_p", type=float, default=0.0, help="prob. of zooming a training image around its anomaly (0 = original behaviour)")
-    parser.add_argument("--zoom_place", choices=["uniform", "beta"], default="uniform",
-                        help="EXP-051: anomaly placement inside a zoom crop; uniform = original, beta = crop corner ~ Beta(zoom_beta, zoom_beta) over the admissible range")
-    parser.add_argument("--zoom_beta", type=float, default=1.0, help="EXP-051: Beta parameter of --zoom_place beta (< 1 pushes the anomaly toward the crop edges)")
     parser.add_argument("--extent_cond", type=str, default="none", choices=["none", "extent", "global", "dual"],
                          help="none = original prompts; extent = extent-conditioned prompts; global = image-conditioned control")
     parser.add_argument("--ec_weight", type=float, default=1.0, help="weight of the extent-estimation loss")

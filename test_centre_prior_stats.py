@@ -191,66 +191,6 @@ def test_real_crop_box():
     assert f(np.zeros((50, 50), bool), (0.10, 0.45)) is None
 
 
-def _legacy_box(m, target_range):
-    """verbatim copy of Dataset._sample_crop_box before EXP-051 (uniform corner), the reference for the parity test below"""
-    if not m.any():
-        return None
-    H, W = m.shape
-    ys, xs = np.nonzero(m)
-    y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
-    side = int(np.sqrt(m.sum() / random.uniform(*target_range)))
-    side = min(max(side, y1 - y0, x1 - x0, 32), W, H)
-    if side >= min(W, H):
-        return None
-    lo_x, hi_x = max(0, x1 - side), min(x0, W - side)
-    lo_y, hi_y = max(0, y1 - side), min(y0, H - side)
-    if lo_x > hi_x or lo_y > hi_y:
-        return None
-    cx, cy = random.randint(lo_x, hi_x), random.randint(lo_y, hi_y)
-    return (cx, cy, cx + side, cy + side)
-
-
-def test_uniform_placement_is_unchanged():
-    """EXP-051 must not change the default: the 'uniform' path of the edited dataset.py draws exactly the boxes of the pre-EXP-051 code (same random stream)."""
-    f, _ = S.load_crop_box("dataset.py", place="uniform")
-    rng = np.random.RandomState(5)
-    masks = [blob(260, 300, rng.randint(40, 220), rng.randint(40, 260), rng.randint(3, 35)) for _ in range(60)]
-    random.seed(9); new = [f(m, (0.10, 0.45)) for m in masks for _ in range(5)]
-    random.seed(9); old = [_legacy_box(m, (0.10, 0.45)) for m in masks for _ in range(5)]
-    assert new == old and sum(b is not None for b in new) > 100
-
-
-def test_beta_placement():
-    """'beta': same side and admissible range as uniform (the crop still contains the whole lesion); a < 1 piles the corner at the two ends of the range,
-    a = 1 spreads it evenly; the lesion area fraction (hence z) is unaffected by the placement."""
-    m = blob(400, 400, 200, 200, 20)
-    ys, xs = np.nonzero(m)
-    out = {}
-    for a in (1.0, 0.1):
-        f, _ = S.load_crop_box("dataset.py", place="beta", beta=a)
-        random.seed(0)
-        pos, fr = [], []
-        for _ in range(3000):
-            b = f(m, (0.10, 0.45))
-            x0, y0, x1, y1 = b
-            side = x1 - x0
-            assert y1 - y0 == side and x0 >= 0 and y0 >= 0 and x1 <= 400 and y1 <= 400
-            c = S.crop(m, b)
-            assert c.sum() == m.sum()
-            lo, hi = xs.max() + 1 - side, xs.min()
-            pos.append((x0 - lo) / max(hi - lo, 1)); fr.append(c.mean())
-        pos = np.array(pos)
-        out[a] = (np.mean((pos < 0.1) | (pos > 0.9)), np.mean(fr))
-    assert 0.12 < out[1.0][0] < 0.28, out          # ~20% of a uniform corner lies in the outer 10% at each end
-    assert out[0.1][0] > 0.6, out                  # strongly edge-biased
-    assert abs(out[1.0][1] - out[0.1][1]) < 0.01   # the area fraction distribution does not depend on placement
-    # edge-biased placement moves the lesion away from the crop centre
-    f1, _ = S.load_crop_box("dataset.py", place="beta", beta=1.0); f2, _ = S.load_crop_box("dataset.py", place="beta", beta=0.1)
-    random.seed(1); c1 = np.mean([S.mask_offset(S.crop(m, f1(m, (0.10, 0.45)))) for _ in range(500)])
-    random.seed(1); c2 = np.mean([S.mask_offset(S.crop(m, f2(m, (0.10, 0.45)))) for _ in range(500)])
-    assert c2 > c1 + 0.1, (c1, c2)
-
-
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
