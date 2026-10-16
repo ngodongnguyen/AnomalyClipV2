@@ -40,7 +40,7 @@ def generate_class_info(dataset_name):
     return obj_list, class_name_map_class_id
 
 class Dataset(data.Dataset):
-    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45), translate_aug_p=0.0, return_original=False,
+    def __init__(self, root, transform, target_transform, dataset_name, mode='test', zoom_aug_p=0.0, zoom_target=(0.10, 0.45),
                  zoom_place='uniform', zoom_beta=1.0):
         self.root = root
         # EXP-051: where the anomaly sits inside a zoom crop. 'uniform' (default) = original behaviour, the crop corner is uniform over the admissible range;
@@ -50,8 +50,6 @@ class Dataset(data.Dataset):
             raise ValueError(f"bad zoom placement {zoom_place!r} / beta {zoom_beta}")
         self.zoom_place = zoom_place
         self.zoom_beta = zoom_beta
-        self.return_original = return_original
-        self.translate_aug_p = translate_aug_p     # EXP-037, default 0 = original behaviour
         self.zoom_aug_p = zoom_aug_p
         self.zoom_target = zoom_target
         self.transform = transform
@@ -105,48 +103,6 @@ class Dataset(data.Dataset):
             return img, img_mask
         return img.crop(box), img_mask.crop(box)
 
-    def sample_scale_pair(self, index, scale_ranges=((0.05, 0.15), (0.25, 0.45)), max_tries=10):
-        """
-        For an anomalous sample, build two crops around the SAME lesion at two different,
-        non-overlapping target scales (default: lesion fills 5-15% of crop A's area vs 25-45%
-        of crop B's area) -- i.e. two views of one lesion seen "zoomed out" vs "zoomed in".
-
-        Returns (img_a, img_b, box_a_norm, box_b_norm) where img_a/img_b are transformed image
-        tensors (via self.transform) and box_*_norm = (x0, y0, x1, y1) is the lesion's own
-        bounding box in [0, 1] coordinates relative to that crop (guaranteed to lie inside
-        [0, 1]^2 since every crop is built to fully contain the lesion). Returns None if this
-        sample has no usable mask or no valid crop could be found for either scale.
-        """
-        data = self.data_all[index]
-        if data['anomaly'] != 1:
-            return None
-        img_path, mask_path = data['img_path'], data['mask_path']
-        img = Image.open(os.path.join(self.root, img_path))
-        if os.path.isdir(os.path.join(self.root, mask_path)):
-            return None
-        m = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
-        if not m.any():
-            return None
-        ys, xs = np.nonzero(m)
-        y0, y1, x0, x1 = int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1
-
-        views = []
-        for target_range in scale_ranges:
-            box = None
-            for _ in range(max_tries):
-                box = self._sample_crop_box(img, m, target_range)
-                if box is not None:
-                    break
-            if box is None:
-                return None
-            cx, cy, cx2, cy2 = box
-            side = cx2 - cx
-            crop = img.crop(box)
-            box_norm = ((x0 - cx) / side, (y0 - cy) / side, (x1 - cx) / side, (y1 - cy) / side)
-            views.append((self.transform(crop), torch.tensor(box_norm, dtype=torch.float32)))
-        (img_a, box_a), (img_b, box_b) = views
-        return img_a, img_b, box_a, box_b
-
     def __getitem__(self, index):
         data = self.data_all[index]
         img_path, mask_path, cls_name, specie_name, anomaly = data['img_path'], data['mask_path'], data['cls_name'], \
@@ -161,19 +117,8 @@ class Dataset(data.Dataset):
             else:
                 img_mask = np.array(Image.open(os.path.join(self.root, mask_path)).convert('L')) > 0
                 img_mask = Image.fromarray(img_mask.astype(np.uint8) * 255, mode='L')
-        original_img = img.copy() if self.return_original else None
-        zoom_applied = False
         if self.zoom_aug_p > 0 and anomaly == 1 and random.random() < self.zoom_aug_p:
-            before_size = img.size
             img, img_mask = self._zoom_around_anomaly(img, img_mask)
-            zoom_applied = img.size != before_size
-        if self.translate_aug_p > 0 and random.random() < self.translate_aug_p:
-            # EXP-037: label-preserving translation with CLIP-mean fill (lesion bounding box stays inside the canvas; normal images shift too)
-            from transaug import translate_pair
-            if img_mask.size != img.size:
-                img_mask = Image.new('L', img.size, 0) if anomaly == 0 else img_mask
-            if img_mask.size == img.size:
-                img, img_mask, _ = translate_pair(img.convert('RGB') if img.mode != 'RGB' else img, img_mask, random, anomaly == 1)
         # transforms
         img = self.transform(img) if self.transform is not None else img
         img_mask = self.target_transform(   
@@ -181,7 +126,4 @@ class Dataset(data.Dataset):
         img_mask = [] if img_mask is None else img_mask
         result = {'img': img, 'img_mask': img_mask, 'cls_name': cls_name, 'anomaly': anomaly,
                   'img_path': os.path.join(self.root, img_path), "cls_id": self.class_name_map_class_id[cls_name]}
-        if self.return_original:
-            result['img_original'] = self.transform(original_img) if self.transform is not None else original_img
-            result['zoom_applied'] = zoom_applied
         return result

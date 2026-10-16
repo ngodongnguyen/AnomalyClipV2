@@ -48,7 +48,7 @@ COMMON=(--dataset mvtec --train_data_path "$MVTEC_ROOT"
         --features_list 24 --image_size 518 --depth 9 --n_ctx 12 --t_n_ctx 4
         --batch_size 8 --print_freq 1 --epoch 15 --save_freq 1
         --learning_rate 0.001 --seed 111 --zoom_aug_p 0.5
-        --consistency_weight 0.0 --ec_weight 1.0 --ec_teacher_p 0.5)
+        --ec_weight 1.0 --ec_teacher_p 0.5)
 
 run_arm() {
   local arm="$1" mode="$2"
@@ -119,7 +119,7 @@ manifest = {
     'seed': 111, 'zoom_aug_p': 0.5, 'dataset': 'mvtec', 'epochs': 15,
     'features_list': [24], 'image_size': 518, 'depth': 9, 'n_ctx': 12,
     't_n_ctx': 4, 'batch_size': 8, 'learning_rate': 0.001,
-    'consistency_weight': 0.0, 'ec_weight': 1.0, 'ec_teacher_p': 0.5,
+    'ec_weight': 1.0, 'ec_teacher_p': 0.5,
 }
 (run_dir / 'training_manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(f"Saved training manifest: {run_dir / 'training_manifest.json'}")
@@ -138,7 +138,7 @@ ecp = json.loads((root / 'ecp_extent/training_manifest.json').read_text())
 zoom = json.loads((root / 'zoom_only/training_manifest.json').read_text())
 for key in ('seed', 'zoom_aug_p', 'dataset', 'epochs', 'features_list', 'image_size',
             'depth', 'n_ctx', 't_n_ctx', 'batch_size', 'learning_rate',
-            'consistency_weight', 'ec_weight', 'ec_teacher_p', 'clip_weights_sha256',
+            'ec_weight', 'ec_teacher_p', 'clip_weights_sha256',
             'mvtec_meta_sha256', 'source_sha256'):
     if ecp[key] != zoom[key]:
         raise SystemExit(f"training arms differ on {key}")

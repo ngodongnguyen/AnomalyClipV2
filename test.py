@@ -21,12 +21,10 @@ import sys
 import numpy as np
 from tabulate import tabulate
 from utils import get_transform
-from extent_prompt import ExtentConditioner, TokenAdapter, area_to_z, visual_descriptor, conditioned_text_features
+from extent_prompt import ExtentConditioner, area_to_z, visual_descriptor, conditioned_text_features
 from sklearn.metrics import roc_auc_score
 from prompt_ensemble import tokenize
 from distractor_stats import LESION, DISTRACT, PRUNED, rerank_pool
-from paa import paa_torch
-from token_prompt import TokenHeads, ot_weights, token_probs
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -69,8 +67,7 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
     code_root = os.path.dirname(os.path.abspath(__file__))
     source_paths = [
         'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
-        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py', 'token_prompt.py',
-        'vvattn_core.py', 'vvattn_stats.py',
+        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py',
     ]
     source_paths.extend(sorted(
         os.path.join('AnomalyCLIP_lib', name)
@@ -88,10 +85,6 @@ def _write_image_level_artifacts(args, rows, metric_values, checkpoint):
         'checkpoint_path': os.path.abspath(args.checkpoint_path),
         'checkpoint_sha256': _sha256_file(args.checkpoint_path),
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
-        'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
-        'checkpoint_tok_q': (checkpoint.get('tok_cfg') or {}).get('q', 0),
-        'checkpoint_vv_head_mask_sha256': (checkpoint.get('vv_head_mask') or {}).get('sha256'),
-        'checkpoint_vv_head_mask_keep_sha256': (checkpoint.get('vv_head_mask') or {}).get('keep_sha256'),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -151,8 +144,7 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
     code_root = os.path.dirname(os.path.abspath(__file__))
     source_paths = [
         'test.py', 'metrics.py', 'dataset.py', 'utils.py', 'extent_prompt.py',
-        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py', 'token_prompt.py',
-        'vvattn_core.py', 'vvattn_stats.py',
+        'prompt_ensemble.py', 'logger.py', 'visualization.py', 'distractor_stats.py',
     ]
     source_paths.extend(sorted(
         os.path.join('AnomalyCLIP_lib', name)
@@ -167,10 +159,6 @@ def _write_pixel_level_artifacts(args, rows, metric_values, checkpoint, results)
         'checkpoint_path': os.path.abspath(args.checkpoint_path),
         'checkpoint_sha256': _sha256_file(args.checkpoint_path),
         'checkpoint_extent_cond': checkpoint.get('extent_cond'),
-        'checkpoint_ec_static_aux': bool(checkpoint.get('ec_static_aux')),
-        'checkpoint_tok_q': (checkpoint.get('tok_cfg') or {}).get('q', 0),
-        'checkpoint_vv_head_mask_sha256': (checkpoint.get('vv_head_mask') or {}).get('sha256'),
-        'checkpoint_vv_head_mask_keep_sha256': (checkpoint.get('vv_head_mask') or {}).get('keep_sha256'),
         'code_revision': _git_revision(),
         'evaluation_source_sha256': source_hashes,
         'pretrained_clip_model': 'ViT-L/14@336px',
@@ -245,14 +233,16 @@ def test(args):
     model.to(device)
     model.visual.DAPM_replace(DPAM_layer = 20)
 
-    # EXP-046: V-V head mask. The checkpoint's own mask is always used when present (a trained checkpoint cannot silently run unmasked);
-    # --vv_head_mask must match it, and is refused for a checkpoint trained without a mask. Default (no flag, no record) = original behaviour.
-    import vvattn_stats
-    vv_keep, _vv_record = vvattn_stats.resolve_test_mask(args.vv_head_mask, checkpoint.get("vv_head_mask"))
-    if vv_keep is not None:
-        import vvattn_core
-        vvattn_core.install_head_mask(model, vv_keep, device)
-        logger.info("V-V head mask active (from checkpoint), sha256 %s, keeps %d/%d heads" % (_vv_record["sha256"], int(vv_keep.sum()), vv_keep.size))
+    # Checkpoints trained with modules whose code was removed (DECISIONS D058, D059) must not be evaluated silently
+    # without those modules: the numbers would be wrong. Use the revision tagged pre-cleanup-2026-10-16 for them.
+    for _key, _what in (("tok_heads", "the TokenCLIP-style module (EXP-044)"),
+                        ("token_adapter", "the post-encoder token adapter (EXP-023)"),
+                        ("static_heads", "the static auxiliary heads (EXP-038)"),
+                        ("paa_scales", "Patch Average Aggregation (EXP-021)"),
+                        ("vv_head_mask", "the V-V head mask (EXP-046)")):
+        if checkpoint.get(_key):
+            raise RuntimeError("this checkpoint was trained with %s, whose code was removed; evaluate it with the "
+                               "revision tagged pre-cleanup-2026-10-16" % _what)
 
     conditioner = None
     if checkpoint.get("extent_cond"):
@@ -260,52 +250,16 @@ def test(args):
         conditioner.load_state_dict(checkpoint["conditioner"])
         conditioner.eval()
 
-    static_heads = None
-    if checkpoint.get("ec_static_aux"):
-        assert checkpoint.get("static_heads") is not None, "static-head checkpoint is incomplete"
-        assert not (args.ec_oracle or args.ec_const_z is not None or args.ec_z_img is not None or args.ec_z_pix is not None), \
-            "static-head inference does not use z flags"
-        static_heads = ExtentConditioner(mode="dual").to(device)
-        static_heads.load_state_dict(checkpoint["static_heads"])
-        static_heads.eval()
-
-    adapter = None
-    if checkpoint.get("token_adapter") is not None:
-        adapter = TokenAdapter(**checkpoint["token_adapter_cfg"]).to(device)
-        adapter.load_state_dict(checkpoint["token_adapter"])
-        adapter.eval()
-
-    # EXP-044: TokenCLIP-style routed map. None = original behaviour. The checkpoint's own cfg is used; --tok_q 0 forces it off.
-    tok_heads, tok_cfg = None, None
-    if args.tok_q is not None and args.tok_q != 0 and not checkpoint.get("tok_heads"):
-        raise ValueError("--tok_q %d requested but the checkpoint has no token heads" % args.tok_q)
-    if checkpoint.get("tok_heads") and args.tok_q != 0:
-        tok_cfg = checkpoint["tok_cfg"]
-        assert args.tok_q is None or args.tok_q == tok_cfg["q"], "--tok_q differs from the checkpoint's Q"
-        assert adapter is None and static_heads is None and not args.paa_scales, "token prompts are not combined with other modules"
-        assert conditioner is not None and conditioner.mode == "extent", "token prompts are defined on top of ECP"
-        tok_heads = TokenHeads(tok_cfg["q"]).to(device)
-        tok_heads.load_state_dict(checkpoint["tok_heads"])
-        tok_heads.eval()
-
     prompts, tokenized_prompts, compound_prompts_text = prompt_learner(cls_id = None)
     text_features_base = model.encode_text_learn(prompts, tokenized_prompts, compound_prompts_text).float()
     text_features_base = torch.stack(torch.chunk(text_features_base, dim = 0, chunks = 2), dim = 1)
     text_features_base = text_features_base/text_features_base.norm(dim=-1, keepdim=True)
-    static_text_img = static_text_pix = None
-    if static_heads is not None:
-        with torch.no_grad():
-            static_text_img = conditioned_text_features(model, prompt_learner, *static_heads.dual_shift("img", 1))
-            static_text_pix = conditioned_text_features(model, prompt_learner, *static_heads.dual_shift("pix", 1))
 
 
     # Pixel-head distractor suppression (no training): s' = s * (1 - d), d = softmax mass (T=100) on distractor
     # concepts among LESION+DISTRACT raw-CLIP text prompts, evaluated on each patch feature. Image head untouched.
     dist_T = dist_mask = None
     assert args.distractor_suppress == 'none' or args.distractor_rerank == 'none', 'use one distractor mode at a time'
-    assert not (args.paa_scales and (args.distractor_suppress != 'none' or args.distractor_rerank != 'none')), 'PAA is not combined with the distractor branches'
-    if not args.paa_scales and checkpoint.get("paa_scales"):
-        logger.info("WARNING: checkpoint was trained with --paa_scales %s but test runs without PAA (pass --paa_scales to match)" % checkpoint["paa_scales"])
     dist_mode = args.distractor_suppress if args.distractor_suppress != 'none' else args.distractor_rerank
     if dist_mode != 'none':
         names = LESION + DISTRACT
@@ -347,10 +301,7 @@ def test(args):
             # to both heads; with neither, both heads use the extent estimator.
             text_features_img = text_features_pix = text_features_base
             z_pred_val = z_gt_val = float('nan')
-            z_adapt = None   # z fed to the optional token adapter (pixel head only)
-            if static_heads is not None:
-                text_features_img, text_features_pix = static_text_img, static_text_pix
-            elif conditioner is not None and conditioner.mode == "dual":
+            if conditioner is not None and conditioner.mode == "dual":
                 # control (EXP-022): constant head-specific shifts, the z flags are ignored
                 text_features_img = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("img", image_features.shape[0]))
                 text_features_pix = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("pix", image_features.shape[0]))
@@ -368,7 +319,6 @@ def test(args):
                 z_img = args.ec_z_img if args.ec_z_img is not None else shared
                 z_pix = args.ec_z_pix if args.ec_z_pix is not None else shared
                 z_pred, text_features_pix = text_at(z_pix)
-                z_adapt = z_gt if z_pix == 'oracle' else (torch.full_like(z_gt, z_pix) if z_pix is not None else z_pred)
                 text_features_img = text_features_pix if z_img == z_pix else text_at(z_img)[1]
                 if z_pred is not None:
                     z_pred_val = float(z_pred[0])
@@ -387,25 +337,12 @@ def test(args):
             if not need_pixel and not args.exp039_pool_scores:
                 continue
             anomaly_map_list = []; d_list = []
-            tok_sub = tok_heads(text_features_pix) if tok_heads is not None else None
             for idx, raw_patch_feature in enumerate(patch_features):
                 if idx >= args.feature_map_layer[0]:
-                    # --paa_scales (default empty = original behaviour): mean over the per-scale anomaly maps of this layer
-                    scale_maps = []
-                    for paa_s in (args.paa_scales if args.paa_scales else [None]):
-                        patch_feature = raw_patch_feature if paa_s is None else paa_torch(raw_patch_feature, paa_s)
-                        if adapter is not None:
-                            patch_feature = adapter(patch_feature, z_adapt)
-                        patch_feature = patch_feature/ patch_feature.norm(dim = -1, keepdim = True)
-                        similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
-                        similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
-                        scale_maps.append((similarity_map[...,1] + 1 - similarity_map[...,0])/2.0)
-                    anomaly_map = scale_maps[0] if len(scale_maps) == 1 else torch.stack(scale_maps).mean(0)
-                    if tok_heads is not None:
-                        # EXP-044: pixel map = mean of the OT-routed map and the base map (image head unchanged)
-                        tok_patch = patch_feature[:, 1:, :].float()
-                        tok_m = AnomalyCLIP_lib.get_similarity_map(token_probs(tok_patch, tok_sub, ot_weights(tok_patch, tok_sub, tok_cfg)), args.image_size)
-                        anomaly_map = 0.5 * (anomaly_map + (tok_m[..., 1] + 1 - tok_m[..., 0]) / 2.0)
+                    patch_feature = raw_patch_feature / raw_patch_feature.norm(dim = -1, keepdim = True)
+                    similarity, _ = AnomalyCLIP_lib.compute_similarity(patch_feature, text_features_pix[0])
+                    similarity_map = AnomalyCLIP_lib.get_similarity_map(similarity[:, 1:, :], args.image_size)
+                    anomaly_map = (similarity_map[...,1] + 1 - similarity_map[...,0])/2.0
                     if dist_T is not None:
                         pr = (100.0 * patch_feature[:, 1:, :].float() @ dist_T.T).softmax(-1)
                         d = pr[..., dist_mask].sum(-1, keepdim=True)  # [1, N, 1]
@@ -595,15 +532,10 @@ if __name__ == '__main__':
                         help="fixed z for the image-level (CLS) head only; overrides --ec_const_z for that head")
     parser.add_argument("--ec_z_pix", type=float, default=None,
                         help="fixed z for the pixel (patch) head only; overrides --ec_const_z for that head")
-    parser.add_argument("--paa_scales", type=int, nargs="*", default=[], help="odd window sizes of Patch Average Aggregation, e.g. 1 3 5 (empty = off, original behaviour)")
     parser.add_argument("--distractor_suppress", choices=['none', 'all9', 'pruned'], default='none',
                         help="pixel-head test-time suppression by raw-CLIP distractor-concept mass (all9 = pre-registered A, pruned = B, held-out only)")
     parser.add_argument("--distractor_rerank", choices=['none', 'all9', 'pruned'], default='none',
                         help="module C: component-gated re-ranking inside the top-10%% pool by distractor mass (pre-registered; all9 only)")
-    parser.add_argument("--tok_q", type=int, default=None,
-                        help="EXP-044: default (unset) = use the token heads stored in the checkpoint, if any; 0 = ignore them (base map only); >0 must equal the checkpoint's Q")
-    parser.add_argument("--vv_head_mask", type=str, default="",
-                        help="EXP-046: optional check only; the mask is read from the checkpoint. Must equal the checkpoint's stored mask; refused if the checkpoint has none")
     parser.add_argument("--ec_oracle", action="store_true",
                         help="diagnostic only: condition on the GROUND-TRUTH lesion extent instead of the estimate")
     

@@ -1,85 +1,159 @@
-# AnomalyCLIP — project notes for Claude
+# AnomalyCLIP — Claude Code Instructions
 
-## Git: never commit or push without explicit per-instance permission
+Claude Code and Codex are peer coding and research agents.
 
-**Never run `git commit` or `git push` on your own initiative — not even "it's just a diagnostic script",
-not even if the user asked for the same thing last time.** Edit/write the files, tell the user what changed,
-and stop there. Only commit/push when the user explicitly asks for it **in that turn** — a prior approval does
-not carry over to the next change. This was violated repeatedly in earlier sessions; do not repeat it.
+Either agent may:
+- inspect the repository
+- research related methods
+- design experiments
+- modify implementation code
+- debug
+- run tests
+- analyze experimental results
+- review work produced by the other agent
 
-Research fork of AnomalyCLIP (ICLR'24 zero-shot anomaly detection), aimed at a Q1/rank-A paper on
-**medical** zero-shot anomaly detection (not industrial — see Scope below). User's own repo:
-`ngodongnguyen/AnomalyClipV2`.
+Do not assume that work created by Codex needs to be redone.
+The current source code and Git working tree are the ground truth for implementation state.
 
-## Environment
+## Shared project context
 
-- Development happens locally in this repo (Mac). All training/testing happens on a **remote GPU server**
-  the user SSHes into themselves (`ai3@ai3:~/NguyenND/AnomalyClipV2`) — Claude cannot run commands there.
-  Sync via `git push`/`git pull`; the user pastes logs back for Claude to interpret.
-- Server data root: `/home/ai3/NguyenND/AnomalyClipV2/data/` (see `run_ecp.sh` for exact per-dataset paths).
-- Local machine lacks `torch`/`cv2` for the main pipeline; `/Users/nguyen.ngo.1/miniconda3/bin/python` has
-  `numpy`/`scipy`/`cv2` and is used to unit-test pure-Python logic (stats helpers, shape descriptors, etc.)
-  before shipping code to the server. Always unit-test non-trivial diagnostic logic this way first.
+Before substantial research or implementation work, read the shared project context:
 
-## The module: ECP (Extent-Conditioned Prompts)
+@research/PROJECT_STATE.md
+@research/REPOSITORY_GUIDANCE.md
+@research/WORKFLOW.md
 
-`extent_prompt.py` (`ExtentConditioner`, `area_to_z`, `visual_descriptor`, `conditioned_text_features`) shifts
-AnomalyCLIP's learnable text-prompt context tokens along a continuous **learned lesion-extent axis** `z`
-(trained on MVTec + `--zoom_aug_p` crop augmentation, so the axis spans native-small to zoomed-large).
+When relevant to the task, also read:
 
-**Current best, final config — two fixed operating points, one per scoring head, same checkpoint:**
-- Pixel/localization head: `z_pix = 1.6` (≈ largest extent seen in training)
-- Image/classification head: `z_img = -0.69` (≈ smallest extent seen in training, the `AREA_MIN` clamp)
-- `test.py` flags: `--ec_z_img -0.69 --ec_z_pix 1.6` (or `--ec_const_z` for one z on both heads,
-  `--ec_oracle` = diagnostic-only GT-extent upper bound). Per-image *estimation* of z was tried and **failed**
-  (see Falsified ideas) — both z values are fixed constants, not predicted per image.
-- `train.py --extent_cond {extent,global,none}` trains the conditioner; `none` = original AnomalyCLIP.
+@research/HYPOTHESES.md
+@research/EXPERIMENTS.md
+@research/DECISIONS.md
 
-**Key checkpoints (server, `./checkpoints/<name>/epoch_15.pth`):**
-| name | what it is |
-|---|---|
-| `ctrl_mvtec` | original AnomalyCLIP baseline (`zoom_aug_p=0`, no module) |
-| `zoom_p1` | augmentation-only control (`zoom_aug_p=1.0`, no module) — isolates what augmentation alone buys |
-| `ecp_extent` (+ `_s222`, `_s333`) | the module, 3 seeds, trained with `zoom_aug_p=0.5` |
-| `ecp_global` | Crane-style image-context-conditioned control (no extent supervision) |
+These files are the canonical shared research state used by both Claude Code and Codex.
 
-`run_ecp.sh` is the single entry point for almost everything (train/test/diagnostics) — read it before writing
-a new one-off command; most needs already have a subcommand (`fixed`, `test_cls`, `test_heldout`, `test_visa`,
-`diag_cb`, `diag_proto`, `diag_shape`, `calibrate`, ...).
+## Before implementation
 
-## Scope: medical, not general-purpose
+Before making substantial implementation changes:
 
-`z_pix=1.6` **hurts** industrial VisA (pixel AUROC −2.5, PRO −7.9 vs ctrl; worst on small-defect classes) because
-industrial defects are tiny relative to medical lesions. The paper is framed as **medical ZSAD**; VisA/industrial
-results go in limitations, not headline results. Don't re-litigate this — it's a measured, pre-registered result.
+1. Inspect the current source code.
+2. Inspect `git status`.
+3. Inspect relevant `git diff` output when there are existing changes.
+4. Read the relevant hypothesis, experiment, and decision records.
+5. Verify what is actually implemented before assuming the state described in previous notes.
 
-## Working discipline (the user enforces this — follow it without being asked)
+Do not overwrite or redo valid work simply because it was produced by Codex.
 
-1. **Pre-register the decision rule before running the experiment.** State in the prior turn what result would
-   confirm vs falsify the hypothesis. Never adjust the threshold after seeing the numbers to make it pass.
-2. **Report negative/failed results as plainly as positive ones.** Do not spin, hedge, or bury a falsification.
-3. **Cheap, no-training diagnostics before any training run.** Most scripts here are `analyze_*.py` test-time
-   diagnostics (no gradient steps) — exhaust those before proposing a new trained component.
-4. **Unit-test new statistics/metrics on synthetic data with a known answer** before running on real data
-   (pattern used throughout: synthetic blobs/masks with known area, shape, or offset).
-5. A metric-gaming trick (e.g. a loss that directly optimizes the eval metric's known weakness) is **not** an
-   acceptable "module" — the user has explicitly rejected this framing more than once.
+## Research state maintenance
 
-## Falsified ideas — do not re-propose without new evidence
+Keep the canonical research files current after meaningful work.
 
-Scale-consistency loss · background-contrast scoring · coverage-adaptive sigma · learned multi-scale fusion ·
-registers/artifact tokens · over-smoothing/depth homogenization · feature-affinity label propagation ·
-prompt-bank / mixture-of-experts fusion (same bottleneck as per-image z estimation, just reparameterized) ·
-per-image extent estimation, 2 attempts (backbone-feature regression, anomaly-map proxy) · automatic domain-level
-z calibration, 3 attempts (Otsu pixel-map fraction, classification-score-spread ratio) · false-positive-hotspot
-attribution to low-level image properties, pre-registered and falsified (specular glare, wet/glossy sheen,
-device-burned-in corner text, dark regions, FOV border, strong edges — none explain the hotspots; they are a
-semantic confusion, not a pixel-level nuisance).
+Update only the files that are relevant:
 
-## Where results live
+### `research/PROJECT_STATE.md`
 
-- `RESULTS_SUMMARY.md` — the master results log (markdown tables, all seeds, all datasets, all falsified ideas
-  with numbers). Update this whenever a new result changes the story.
-- `results.html` — same content, styled for local viewing (`open results.html`). Keep both in sync.
-- Memory (`~/.claude/projects/.../memory/project_ecp_module.md`) has a running technical summary across
-  sessions — read it at the start of a new session before assuming context from scratch.
+Update when there is a meaningful change to:
+- the current research objective
+- the current method or modification
+- confirmed observations
+- the main unresolved problem
+- the current research direction
+- important conclusions that affect future work
+
+Keep this file concise and focused on the current state of the project.
+
+### `research/HYPOTHESES.md`
+
+Update when:
+- a new hypothesis is created
+- an existing hypothesis is refined
+- evidence supports or weakens a hypothesis
+- a hypothesis is rejected
+- evidence remains inconclusive
+
+Do not mark a hypothesis as supported without experimental evidence.
+
+### `research/EXPERIMENTS.md`
+
+Update when an experiment is:
+- proposed for actual execution
+- implemented
+- started
+- completed
+- failed
+- modified substantially
+- associated with meaningful results
+
+Record actual configurations, datasets, metrics, status, and conclusions when available.
+
+Never invent experiment results.
+
+### `research/DECISIONS.md`
+
+Update when an important methodological, experimental, or architectural decision is made that future agents should know about.
+
+Record:
+- what was decided
+- why
+- relevant alternatives when useful
+- related hypothesis or experiment IDs when applicable
+
+## Raw research notes
+
+Save exploratory Claude analysis in:
+
+`research/notes/claude/`
+
+Raw notes may contain:
+- literature analysis
+- debugging observations
+- speculative ideas
+- alternative explanations
+- preliminary reasoning
+- reviewer-style criticism
+
+Raw notes are not automatically accepted conclusions.
+
+Promote information from raw notes into the canonical research files only when it becomes relevant and sufficiently supported.
+
+## Evidence discipline
+
+Clearly distinguish between:
+- confirmed implementation facts
+- experimental observations
+- hypotheses
+- interpretations
+- speculative ideas
+
+Do not present a hypothesis as a confirmed mechanism without evidence.
+
+Do not hide negative results.
+
+Do not optimize conclusions around only the datasets that improved.
+
+## Shared-agent workflow
+
+Claude Code and Codex may continue work started by one another.
+
+When continuing previous work:
+- inspect the actual current implementation
+- read the shared project state
+- inspect existing changes
+- preserve valid prior work
+- avoid duplicating completed analysis or implementation
+
+Before finishing substantial research or implementation work, check whether any of the following should be updated:
+
+- `research/PROJECT_STATE.md`
+- `research/HYPOTHESES.md`
+- `research/EXPERIMENTS.md`
+- `research/DECISIONS.md`
+
+Do not update canonical files for trivial edits, formatting changes, or speculative thoughts that have not matured into useful project knowledge.
+
+## Git safety
+
+Never commit or push unless the user explicitly requests it in the current turn.
+
+Do not discard or overwrite existing uncommitted changes without understanding them first.
+
+If the repository already contains modifications, inspect them before editing related files.

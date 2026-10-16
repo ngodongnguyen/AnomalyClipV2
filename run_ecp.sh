@@ -16,7 +16,7 @@ COMMON="--features_list 24 --image_size 518 --depth 9 --n_ctx 12 --t_n_ctx 4"
 train () {  # $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed (default 111)
   CUDA_VISIBLE_DEVICES=$DEV python train.py --dataset mvtec --train_data_path $MVTEC \
     --save_path ./checkpoints/$1/ $COMMON --batch_size 8 --print_freq 1 \
-    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2 ${PAA:-} ${TRAIN_EXTRA:-}
+    --epoch $3 --save_freq 1 --seed ${4:-111} --zoom_aug_p $ZOOM --extent_cond $2 ${TRAIN_EXTRA:-}
 }
 
 train_visa () {  # VisA as the auxiliary source (protocol of CoPS/MRAD/MoECLIP/VisualAD). $1 = name, $2 = extent_cond, $3 = epochs, $4 = seed
@@ -74,42 +74,6 @@ case "$1" in
         --save_path ./results/$2/$DIR --checkpoint_path ./checkpoints/$2/epoch_15.pth \
         $COMMON --metrics image-level ${3:-}
     done ;;
-  # flip/rotation robustness + test-time-augmentation ensemble check: bash run_ecp.sh diag_tta <ckpt> [z_pix] [limit]
-  diag_tta)
-    A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; L=${4:-150}; CK=./checkpoints/$2/epoch_15.pth
-    for P in "colon $CVC/CVC-ClinicDB" "colon $CVC/Kvasir" "colon $CVC/CVC-ColonDB" "ISBI $A/ISIC" \
-             "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
-      DS=${P%% *}; DP=${P#* }
-      CUDA_VISIBLE_DEVICES=$DEV python analyze_tta_robustness.py --dataset $DS --data_path "$DP" \
-        --checkpoint_path $CK --limit $L $X
-    done ;;
-  # lesion shape (solidity/compactness) vs AUROC, controlling for size: bash run_ecp.sh diag_shape <ckpt> [z_pix]
-  diag_shape)
-    A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; CK=./checkpoints/$2/epoch_15.pth
-    for P in "colon $CVC/CVC-ClinicDB" "colon $CVC/Kvasir" "colon $CVC/CVC-ColonDB" "ISBI $A/ISIC" \
-             "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
-      DS=${P%% *}; DP=${P#* }
-      CUDA_VISIBLE_DEVICES=$DEV python analyze_failure_factors.py --dataset $DS --data_path "$DP" \
-        --checkpoint_path $CK --out_csv shape_$2_$(basename "$DP").csv $X
-    done ;;
-  # self-prototype re-scoring diagnostic (no training): bash run_ecp.sh diag_proto <ckpt> [z_pix]
-  diag_proto)
-    A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; CK=./checkpoints/$2/epoch_15.pth
-    for P in "colon $CVC/CVC-ClinicDB" "colon $CVC/Kvasir" "colon $CVC/CVC-ColonDB" "ISBI $A/ISIC" \
-             "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
-      DS=${P%% *}; DP=${P#* }
-      CUDA_VISIBLE_DEVICES=$DEV python analyze_self_prototype.py --dataset $DS --data_path "$DP" \
-        --checkpoint_path $CK $X
-    done ;;
-  # spatial error decomposition (core cold / rim bleed / far false-positive hotspots): bash run_ecp.sh diag_cb <ckpt> [z_pix]
-  diag_cb)
-    A=/home/ai3/NguyenND/AnomalyClipV2/data; X=${3:+--ec_z_pix $3}; CK=./checkpoints/$2/epoch_15.pth
-    for P in "colon $CVC/CVC-ClinicDB" "colon $CVC/Kvasir" "colon $CVC/CVC-ColonDB" "ISBI $A/ISIC" \
-             "colon $A/EndoTect_2020_Segmentation_Test_Dataset" "thyroid $A/TN3K/Thyroid Dataset/tn3k"; do
-      DS=${P%% *}; DP=${P#* }
-      CUDA_VISIBLE_DEVICES=$DEV python analyze_core_boundary.py --dataset $DS --data_path "$DP" \
-        --checkpoint_path $CK --out_csv core_boundary_$2_$(basename "$DP").csv $X ${4:-}
-    done ;;
   # industrial check (standard protocol: MVTec-trained model tested on VisA): bash run_ecp.sh test_visa <ckpt> [flags]
   test_visa)
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset visa --data_path /home/ai3/NguyenND/AnomalyClipV2/data/visa \
@@ -139,43 +103,21 @@ case "$1" in
       CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset brain --data_path $A/$DIR --save_path $OUT/$DIR \
         --checkpoint_path $CKP $COMMON --metrics image-level $F
     done ;;
-  # domain-level z calibration on unlabeled images (no labels used for the decision): bash run_ecp.sh calibrate
-  calibrate)
-    A=/home/ai3/NguyenND/AnomalyClipV2/data; CK=./checkpoints/ecp_extent/epoch_15.pth
-    python calibrate_z_domain.py --dataset colon --data_path $A/CVC/CVC-ClinicDB --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset colon --data_path $A/CVC/Kvasir --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset colon --data_path $A/CVC/CVC-ColonDB --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset ISBI --data_path $A/ISIC --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset colon --data_path $A/EndoTect_2020_Segmentation_Test_Dataset --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset brain --data_path $A/HeadCT_anomaly_detection --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset brain --data_path $A/BrainMRI --checkpoint_path $CK
-    python calibrate_z_domain.py --dataset brain --data_path $A/br35 --checkpoint_path $CK ;;
   # EXP-020: VisA-trained controls and ECP (same seed/epochs/COMMON as the MVTec runs). One at a time, ~100 min each.
   #   bash run_ecp.sh train_visa_ctrl | train_visa_zoom | train_visa_ecp   [seed -> checkpoints/<name>_s<seed>]
   smoke_visa)      ZOOM=0.5; train_visa ecp_visa_smoke extent 1 ;;   # 1-epoch check that VisA training/zoom-aug/extent head run
   train_visa_ctrl) ZOOM=0;   train_visa ctrl_visa${2:+_s$2} none 15 $2 ;;
   train_visa_zoom) ZOOM=0.5; train_visa zoom_visa${2:+_s$2} none 15 $2 ;;
   train_visa_ecp)  ZOOM=0.5; train_visa ecp_visa${2:+_s$2} extent 15 $2 ;;
-  # EXP-021: ECP trained with Patch Average Aggregation (scales 1 3 5), same seed/zoom/epochs as ecp_extent. ~100 min.
-  smoke_paa)  ZOOM=0.5; PAA="--paa_scales 1 3 5"; train ecp_paa_smoke extent 1 ;;
-  train_paa)  ZOOM=0.5; PAA="--paa_scales 1 3 5"; train ecp_paa extent 15 ;;
   # EXP-022: control "learned constant prompt shift per head" (no extent axis), same recipe/seed/zoom as the matched ECP. ~100 min.
   smoke_dual) ZOOM=0.5; train ecp_dual_smoke dual 1 ;;
   train_dual) ZOOM=0.5; train ecp_dual dual 15 ;;
-  # EXP-023: post-encoder token adapter on top of the matched ECP recipe (z = conditioned on extent z, const = z-free control). ~100 min each.
-  smoke_va)       ZOOM=0.5; TRAIN_EXTRA="--token_adapter z"; train ecp_va_smoke extent 1 ;;
-  train_va_z)     ZOOM=0.5; TRAIN_EXTRA="--token_adapter z"; train ecp_va_z extent 15 ;;
-  train_va_const) ZOOM=0.5; TRAIN_EXTRA="--token_adapter const"; train ecp_va_const extent 15 ;;
   # EXP-024: matched three-seed arms (same recipe as scripts/train_exp012_matched_pair.sh, new checkpoint names so the older seed-222/333 checkpoints are NOT overwritten).
   #   bash run_ecp.sh train_m_ecp 222 | train_m_zoom 222 | train_m_dual 222   (seed 111 already exists: EXP-012-matched/{ecp_extent,zoom_only}/checkpoints and ecp_dual)
   train_m_ecp)  ZOOM=0.5; train matched_ecp_s$2  extent 15 $2 ;;
   train_m_zoom) ZOOM=0.5; train matched_zoom_s$2 none   15 $2 ;;
   train_m_dual) ZOOM=0.5; train matched_dual_s$2 dual   15 $2 ;;
   # EXP-028 controls (same recipe as train_m_ecp): SHUF = extent labels rotated among the anomalous images of a batch; LATENT = no extent supervision, no teacher forcing
-  # EXP-037: position-jittered training (translation augmentation, default-off flag), otherwise the matched ECP recipe
-  smoke_tr)       ZOOM=0.5; TRAIN_EXTRA="--translate_aug_p 0.5" train tr_smoke extent 1 ;;
-  train_m_tr)     ZOOM=0.5; TRAIN_EXTRA="--translate_aug_p 0.5" train matched_tr_s$2 extent 15 $2 ;;
   # EXP-030: matched no-zoom control = original AnomalyCLIP prompts (no zoom augmentation, no ECP), same recipe/seeds as train_m_ecp
   train_m_ctrl)   ZOOM=0; train matched_ctrl_s$2 none 15 $2 ;;
   smoke_ctrl)     ZOOM=0; train ctrl_smoke none 1 ;;
@@ -183,15 +125,6 @@ case "$1" in
   train_m_latent) ZOOM=0.5; TRAIN_EXTRA="--ec_weight 0 --ec_teacher_p 0" train matched_latent_s$2 extent 15 $2 ;;
   smoke_shuf)     ZOOM=0.5; TRAIN_EXTRA="--ec_z_shuffle batch" train shuf_smoke extent 1 ;;
   smoke_latent)   ZOOM=0.5; TRAIN_EXTRA="--ec_weight 0 --ec_teacher_p 0" train latent_smoke extent 1 ;;
-  # EXP-044: TokenCLIP-style prompt subspaces with OT routing on top of the matched ECP recipe (seed 111). TOK = Q 3, hinge 1.0, ortho 100; TOKQ1 = control Q 1, hinge 1.0, no ortho.
-  smoke_tok)      ZOOM=0.5; TRAIN_EXTRA="--tok_q 3 --tok_hinge 1.0 --tok_ortho 100" train tok_smoke extent 1 ;;
-  train_m_tok)    ZOOM=0.5; TRAIN_EXTRA="--tok_q 3 --tok_hinge 1.0 --tok_ortho 100" train matched_tok_s111 extent 15 111 ;;
-  train_m_tokq1)  ZOOM=0.5; TRAIN_EXTRA="--tok_q 1 --tok_hinge 1.0" train matched_tokq1_s111 extent 15 111 ;;
-  # EXP-046: ECP trained with a V-V head mask (default-off --vv_head_mask), matched recipe, seed 111. HEAD50 = top-50% heads by the MVTec score, RAND50 = EXP-045 random-50% seed 0.
-  #   masks: python scripts/make_head_masks_exp046.py  (-> results/EXP-046/{head50,rand50_s0}_mask.npy)
-  smoke_head)     ZOOM=0.5; TRAIN_EXTRA="--vv_head_mask ./results/EXP-046/head50_mask.npy" train head_smoke extent 1 ;;
-  train_m_head50) ZOOM=0.5; TRAIN_EXTRA="--vv_head_mask ./results/EXP-046/head50_mask.npy" train matched_head50_s111 extent 15 111 ;;
-  train_m_rand50) ZOOM=0.5; TRAIN_EXTRA="--vv_head_mask ./results/EXP-046/rand50_s0_mask.npy" train matched_rand50_s111 extent 15 111 ;;
   # EXP-051: position-debiased zoom = matched ECP recipe with the zoom crop corner drawn from Beta(a, a) (a from results/EXP-051/sweep/selection.json)
   #   bash run_ecp.sh smoke_eb A | train_m_eb SEED A
   smoke_eb)       ZOOM=0.5; TRAIN_EXTRA="--zoom_place beta --zoom_beta $2" train eb_smoke extent 1 ;;
@@ -211,7 +144,7 @@ case "$1" in
       --save_path $OUT/endo --checkpoint_path $CKP $COMMON --metrics pixel-level $F
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset thyroid --data_path "$A/TN3K/Thyroid Dataset/tn3k" \
       --save_path $OUT/tn3k --checkpoint_path $CKP $COMMON --metrics pixel-level $F
-    # set SKIP_IMG=1 to skip the three image-level sets (e.g. PAA, which only changes the pixel head): saves ~25 min per run
+    # set SKIP_IMG=1 to skip the three image-level sets: saves ~25 min per run
     for DIR in HeadCT_anomaly_detection BrainMRI br35; do
       [ -n "${SKIP_IMG:-}" ] && continue
       CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset brain --data_path $A/$DIR --save_path $OUT/$DIR \
@@ -222,5 +155,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_paa|train_paa|smoke_dual|train_dual|smoke_va|train_va_z|train_va_const|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|train_m_tr SEED|smoke_tr|train_m_ctrl SEED|smoke_ctrl|train_m_shuf SEED|train_m_latent SEED|smoke_shuf|smoke_latent|smoke_tok|train_m_tok|train_m_tokq1|smoke_head|train_m_head50|train_m_rand50|smoke_eb A|train_m_eb SEED A|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]|calibrate}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_dual|train_dual|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|train_m_ctrl SEED|smoke_ctrl|train_m_shuf SEED|train_m_latent SEED|smoke_shuf|smoke_latent|smoke_eb A|train_m_eb SEED A|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]}" ;;
 esac

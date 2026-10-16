@@ -43,7 +43,7 @@ for arm, manifest in ((os.environ['ECP_CHECKPOINT'],ecp),(os.environ['ZOOM_CHECK
     if sha(arm)!=manifest['checkpoint_sha256']: raise SystemExit(f'checkpoint hash mismatch: {arm}')
 if sha(os.environ['CLIP_WEIGHTS'])!=ecp['clip_weights_sha256'] or ecp['clip_weights_sha256']!=zoom['clip_weights_sha256']:
     raise SystemExit('CLIP weights differ from the training manifests')
-keys=('seed','zoom_aug_p','dataset','epochs','features_list','image_size','depth','n_ctx','t_n_ctx','batch_size','learning_rate','consistency_weight','ec_weight','ec_teacher_p','mvtec_meta_sha256','source_sha256')
+keys=('seed','zoom_aug_p','dataset','epochs','features_list','image_size','depth','n_ctx','t_n_ctx','batch_size','learning_rate','ec_weight','ec_teacher_p','mvtec_meta_sha256','source_sha256')
 if any(ecp[k]!=zoom[k] for k in keys): raise SystemExit('common settings differ between training manifests')
 if ecp['extent_cond']!='extent' or zoom['extent_cond']!='none' or ecp['seed']!=111 or ecp['zoom_aug_p']!=0.5:
     raise SystemExit('training manifest configuration does not match EXP-012')
