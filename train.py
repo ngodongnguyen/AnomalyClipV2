@@ -26,6 +26,8 @@ def setup_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 def train(args):
+    if args.ec_const_train_z and args.extent_cond != "extent":
+        raise ValueError("--ec_const_train_z needs --extent_cond extent")
     logger = get_logger(args.save_path)
     z_shuffle_rng = np.random.RandomState(args.seed + 1)   # only used with --ec_z_shuffle batch
 
@@ -102,6 +104,18 @@ def train(args):
                 n_b = image.shape[0]
                 text_features_img = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("img", n_b))
                 text_features = conditioned_text_features(model, prompt_learner, *conditioner.dual_shift("pix", n_b))
+                text_probs = torch.einsum("bc,btc->bt", image_features, text_features_img) / 0.07
+            elif args.ec_const_train_z:
+                # EXP-055 control: no estimator, no extent loss, no GT z. The prompts are shifted by the fixed operating-point z values
+                # (image head: ec_train_z_img, pixel head: ec_train_z_pix), the same values that test.py uses at inference
+                n_b = image.shape[0]
+                z_i = torch.full((n_b,), args.ec_train_z_img, device=device)
+                z_p = torch.full((n_b,), args.ec_train_z_pix, device=device)
+                desc = visual_descriptor(image_features, patch_features)
+                _, c_pos_i, c_neg_i = conditioner(desc, z_override=z_i)
+                _, c_pos_p, c_neg_p = conditioner(desc, z_override=z_p)
+                text_features_img = conditioned_text_features(model, prompt_learner, c_pos_i, c_neg_i)
+                text_features = conditioned_text_features(model, prompt_learner, c_pos_p, c_neg_p)
                 text_probs = torch.einsum("bc,btc->bt", image_features, text_features_img) / 0.07
             else:
                 lab = label.long().to(device)
@@ -192,6 +206,10 @@ if __name__ == '__main__':
     parser.add_argument("--ec_weight", type=float, default=1.0, help="weight of the extent-estimation loss")
     parser.add_argument("--ec_z_shuffle", type=str, default="none", choices=["none", "batch"],
                          help="EXP-028 control: rotate the extent labels (teacher z and extent-loss target) among the anomalous images of a batch")
+    parser.add_argument("--ec_const_train_z", action="store_true",
+                         help="EXP-055 control (needs --extent_cond extent): train with the fixed z values below instead of the estimator / GT z; no extent loss")
+    parser.add_argument("--ec_train_z_img", type=float, default=-0.69, help="EXP-055: z used for the image head while training")
+    parser.add_argument("--ec_train_z_pix", type=float, default=1.6, help="EXP-055: z used for the pixel head while training")
     parser.add_argument("--ec_teacher_p", type=float, default=0.5,
                          help="prob. of conditioning on the ground-truth extent (anomalous images) instead of the estimate")
     args = parser.parse_args()

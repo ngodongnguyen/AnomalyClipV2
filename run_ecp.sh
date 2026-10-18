@@ -126,6 +126,9 @@ case "$1" in
   smoke_shuf)     ZOOM=0.5; TRAIN_EXTRA="--ec_z_shuffle batch" train shuf_smoke extent 1 ;;
   # EXP-054: teacher-forcing probability ablation (ECP recipe, only --ec_teacher_p changes).  bash run_ecp.sh train_m_tp SEED P   -> checkpoints/matched_tp<P*100>_s<SEED>
   train_m_tp)     ZOOM=0.5; TRAIN_EXTRA="--ec_teacher_p $3" train matched_tp$(python3 -c "print(int(round($3*100)))")_s$2 extent 15 $2 ;;
+  # EXP-055: ECP trained with FIXED z (image -0.69, pixel 1.6), no estimator, no extent loss.  bash run_ecp.sh smoke_cz | train_m_cz SEED
+  smoke_cz)       ZOOM=0.5; TRAIN_EXTRA="--ec_const_train_z" train cz_smoke extent 1 ;;
+  train_m_cz)     ZOOM=0.5; TRAIN_EXTRA="--ec_const_train_z" train matched_cz_s$2 extent 15 $2 ;;
   smoke_latent)   ZOOM=0.5; TRAIN_EXTRA="--ec_weight 0 --ec_teacher_p 0" train latent_smoke extent 1 ;;
   # fixed per-head config (image z=ZI, pixel z=ZP) for ANY checkpoint; z flags are ignored by checkpoints without a conditioner.
   #   bash run_ecp.sh fixed_ckpt <checkpoint_name> [ZI] [ZP]      -> ./results/<ckpt>_fixed
@@ -153,5 +156,5 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset mvtec --data_path $MVTEC \
       --save_path ./results/$2/mvtec --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_dual|train_dual|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|train_m_ctrl SEED|smoke_ctrl|train_m_shuf SEED|train_m_latent SEED|smoke_shuf|smoke_latent|train_m_tp SEED P|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]}" ;;
+  *) echo "usage: bash run_ecp.sh {smoke|train_extent|train_global|test_extent|test_global|test_oracle|train_seed N|test_seed N|test_sigma CKPT SIGMA|test_heldout CKPT [SIGMA]|smoke_dual|train_dual|train_m_ecp SEED|train_m_zoom SEED|train_m_dual SEED|train_m_ctrl SEED|smoke_ctrl|train_m_shuf SEED|train_m_latent SEED|smoke_shuf|smoke_latent|smoke_cz|train_m_cz SEED|train_m_tp SEED P|smoke_visa|train_visa_ctrl|train_visa_zoom|train_visa_ecp [SEED]|fixed_ckpt CKPT [ZI] [ZP] [FLAGS] [TAG]|test_mvtec_visa CKPT|test_cls CKPT [FLAGS]}" ;;
 esac
