@@ -10,10 +10,19 @@ meta.json, so the source dataset and any existing meta.json are never modified.
         [--abnormal COVID] [--normal Normal] [--force]
 
 If a species folder contains an `images` subfolder (the Kaggle layout), that subfolder is used.
+--limit_abnormal / --limit_normal keep the first N images in natural-number order; the first public release of the
+database (219 COVID, 1341 Normal) is the likely source of AnomalyCLIP's numbers, but which files belong to it is NOT
+verified, so a limited root is a reconstruction.
 """
 import argparse
 import json
 import os
+import re
+
+
+def natural_key(name):
+    """Sort COVID-2.png before COVID-10.png (numeric suffix), not lexicographically."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
 def find_dir(src, name):
@@ -26,7 +35,7 @@ def find_dir(src, name):
     raise SystemExit(f"folder {name!r} not found in {src}; found: {sorted(os.listdir(src))}")
 
 
-def build(src, dst, abnormal, normal, force=False):
+def build(src, dst, abnormal, normal, force=False, limit_abnormal=None, limit_normal=None):
     meta_path = os.path.join(dst, "meta.json")
     if os.path.exists(meta_path) and not force:
         raise SystemExit(f"{meta_path} exists; pass --force to overwrite")
@@ -38,7 +47,10 @@ def build(src, dst, abnormal, normal, force=False):
         if os.path.lexists(link):
             os.remove(link)
         os.symlink(os.path.abspath(path), link)
-        names = sorted(n for n in os.listdir(path) if n.lower().endswith((".png", ".jpg", ".jpeg")))
+        names = sorted((n for n in os.listdir(path) if n.lower().endswith((".png", ".jpg", ".jpeg"))), key=natural_key)
+        limit = limit_abnormal if label == 1 else limit_normal
+        if limit is not None:
+            names = names[:limit]
         counts[entry] = len(names)
         for name in names:
             cls_info.append(dict(img_path=f"{entry}/{name}", mask_path="", cls_name="chest",
@@ -59,5 +71,9 @@ if __name__ == "__main__":
     ap.add_argument("--abnormal", default="COVID")
     ap.add_argument("--normal", default="Normal")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--limit_abnormal", type=int, default=None,
+                    help="keep only the first N anomalous images in natural order (e.g. 219 to mimic the first release)")
+    ap.add_argument("--limit_normal", type=int, default=None,
+                    help="keep only the first N normal images in natural order (e.g. 1341)")
     a = ap.parse_args()
-    build(a.src, a.dst, a.abnormal, a.normal, a.force)
+    build(a.src, a.dst, a.abnormal, a.normal, a.force, a.limit_abnormal, a.limit_normal)
