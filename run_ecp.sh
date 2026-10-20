@@ -79,10 +79,10 @@ case "$1" in
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset visa --data_path /home/ai3/NguyenND/AnomalyClipV2/data/visa \
       --save_path ./results/$2/visa --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-pixel-level ${3:-} ;;
-  # clean held-out check (never used for any design decision): bash run_ecp.sh test_covid <checkpoint_name> [extra flags]
+  # COVID vs Normal only (EXP-056; build the root with generate_dataset_json/covid_vs_normal.py): bash run_ecp.sh test_covid <checkpoint_name> [extra flags]
   test_covid)
     CUDA_VISIBLE_DEVICES=$DEV python test.py --dataset Chest \
-      --data_path /home/ai3/NguyenND/AnomalyClipV2/data/Covid \
+      --data_path ${COVID_ROOT:-/home/ai3/NguyenND/AnomalyClipV2/data/Covid_vs_Normal} \
       --save_path ./results/$2/covid --checkpoint_path ./checkpoints/$2/epoch_15.pth \
       $COMMON --metrics image-level ${3:-} ;;
   # ONE fixed config for every dataset: image head z=$ZI, pixel head z=$ZP.  bash run_ecp.sh fixed [ZI] [ZP]
