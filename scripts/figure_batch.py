@@ -23,9 +23,11 @@ ZS = {"ctrl": ["1.6"], "zo": ["1.6"], "ecp": ["-0.69", "0.0", "0.8", "1.6", "2.4
 def find_mask(root, img_id):
     with open(os.path.join(root, "meta.json")) as f:
         meta = json.load(f)["test"]
+    # meta.json may hold absolute paths (written with the root at generation time); the id in the CSV is relative to the data root,
+    # exactly like analyze_badcases (os.path.relpath(os.path.join(root, img_path), root)).
     for recs in meta.values():
         for r in recs:
-            if r["img_path"] == img_id:
+            if os.path.relpath(os.path.join(root, r["img_path"]), root) == img_id:
                 return r["mask_path"]
     raise SystemExit(f"{img_id} not found in {root}/meta.json")
 
