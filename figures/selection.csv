@@ -1,0 +1,13 @@
+set,tag,id,ecp_auroc
+ClinicDB,typical,images/490.png,0.9663422129753466
+ClinicDB,hard,images/563.png,0.7773737213912949
+Kvasir,typical,images/cju2srvy5440s0801y1ba9akr.png,0.9571318771413495
+Kvasir,hard,images/cju84aoa3ktwn0755pfl4gfwd.png,0.7966466603319381
+ColonDB,typical,images/273.png,0.9652850272835699
+ColonDB,hard,images/340.png,0.7450570075458991
+ISIC,typical,skin/test/ISBI2016_ISIC_Part1_Test_Data/ISIC_0000012.jpg,0.9834511760950441
+ISIC,hard,skin/test/ISBI2016_ISIC_Part1_Test_Data/ISIC_0011149.jpg,0.9279808105318372
+Endo,typical,images/3c52b2df-20be-42a5-a8d3-48eacbbe456f.jpg,0.963800784148693
+Endo,hard,images/5ee9869c-deea-4610-8993-e694155f7641.jpg,0.8493559809244876
+TN3K,typical,test-image/0433.jpg,0.9169048232168414
+TN3K,hard,test-image/0139.jpg,0.7547996421215559
