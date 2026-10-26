@@ -17,10 +17,10 @@ ColonDB,gain,images/336.png,0.9532
 ISIC,gain,skin/test/ISBI2016_ISIC_Part1_Test_Data/ISIC_0000188.jpg,0.9462
 Endo,gain,images/0abee68d-f929-4da9-90b3-dcde15f06ef8.jpg,0.951
 TN3K,gain,test-image/0068.jpg,0.9184
-Kvasir,gain2,images/cju3280wv1ir009882jze27tc.png,0.9941
-Kvasir,gain2,images/cju77k828z46w0871r0avuoo9.png,0.996
-Kvasir,gain2,images/cju30bmab08bi0835mvlr6e0r.png,0.9973
-TN3K,gain2,test-image/0121.jpg,0.9696
-TN3K,gain2,test-image/0259.jpg,0.9653
-TN3K,gain2,test-image/0019.jpg,0.9517
-TN3K,gain2,test-image/0370.jpg,0.941
+Kvasir,gain2a,images/cju3280wv1ir009882jze27tc.png,0.9941
+Kvasir,gain2b,images/cju77k828z46w0871r0avuoo9.png,0.996
+Kvasir,gain2c,images/cju30bmab08bi0835mvlr6e0r.png,0.9973
+TN3K,gain2a,test-image/0121.jpg,0.9696
+TN3K,gain2b,test-image/0259.jpg,0.9653
+TN3K,gain2c,test-image/0019.jpg,0.9517
+TN3K,gain2d,test-image/0370.jpg,0.941

@@ -330,7 +330,7 @@ def fig_sota(tag):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["ablation", "decomp", "select", "qual", "zsweep", "sota", "gain"])
-    ap.add_argument("--tag", default="typical", choices=["typical", "hard", "gain", "gain2"])
+    ap.add_argument("--tag", default="typical", choices=["typical", "hard", "gain", "gain2a", "gain2b", "gain2c", "gain2d"])
     a = ap.parse_args()
     {"ablation": fig_ablation, "decomp": fig_decomp, "select": fig_select, "gain": fig_gain, "zsweep": fig_zsweep,
      "sota": lambda: fig_sota(a.tag)}.get(a.cmd, lambda: fig_qual(a.tag))()
