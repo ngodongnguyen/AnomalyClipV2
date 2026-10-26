@@ -35,7 +35,7 @@ def find_mask(root, img_id):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selection", default="figures/selection.csv")
-    ap.add_argument("--tags", nargs="+", default=["typical", "hard", "gain"])
+    ap.add_argument("--tags", nargs="+", default=["typical", "hard", "gain", "gain2"])
     ap.add_argument("--out_dir", default="figure_panels")
     a = ap.parse_args()
     with open(a.selection) as f:
